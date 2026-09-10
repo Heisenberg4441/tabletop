@@ -79,6 +79,8 @@ final class BrainrotShow {
     /// same idea as `SparkBurstPool.zPosition`, just noisier: debris, then
     /// captions over the debris, then the screen flash over everything.
     private enum Z {
+        /// Below the cards, unlike everything else here: the wash is the room.
+        static let vignette: CGFloat = 1250
         static let debris: CGFloat = 1300
         static let caption: CGFloat = 1450
         static let flash: CGFloat = 1500
@@ -87,11 +89,21 @@ final class BrainrotShow {
     private var live: [Live] = []
     private var rng = DeterministicRNG(seed: 0x8BADF00D)
 
+    /// The two layers that stay on the board for as long as the mode is on,
+    /// rather than being thrown and swept like everything else: a wash of
+    /// colour over the felt that steps hue on every beat, and an edge glow that
+    /// closes in as the combo climbs. Everything else here is an event; these
+    /// two are the room the events happen in.
+    private let wash = CALayer()
+    private let vignette = CAGradientLayer()
+    private var beat = 0
+
     /// Consecutive moves, and when the last one happened. The combo is what
     /// makes the mode escalate instead of being uniformly loud: the first move
     /// of a session gets a fireball, the tenth in a row gets the works.
     private(set) var combo = 0
     private var lastMove: CFTimeInterval = 0
+    private var lastNag: CFTimeInterval = 0
     /// Long enough to cross the board and think, short enough that a run has
     /// to actually be a run.
     private static let comboWindow: CFTimeInterval = 4.0
@@ -117,7 +129,7 @@ final class BrainrotShow {
         shake(magnitude: (big ? 7 : 4) + CGFloat(heat) * 0.6,
               punch: big ? 0.035 : 0.02, delay: delay, in: ctx)
 
-        if foundation || heat >= 2 {
+        if foundation || heat >= 1 {
             caption(Self.hype[rng.next(upperBound: Self.hype.count)]
                         + " " + Self.hypeEmoji[rng.next(upperBound: Self.hypeEmoji.count)],
                     at: CGPoint(x: point.x, y: point.y - ctx.cardWidth * 0.55),
@@ -131,6 +143,31 @@ final class BrainrotShow {
         if foundation || heat >= 5 { firework(delay: delay + 0.04, in: ctx) }
         if (foundation && heat >= 3) || heat >= 8 { confetti(delay: delay, in: ctx) }
         if (foundation && heat >= 6) || heat >= 12 { flash(delay: delay, in: ctx) }
+    }
+
+    /// A new deal, greeted the way this mode greets everything.
+    func kickoff(in ctx: Context) {
+        let middle = CGPoint(x: ctx.bounds.midX, y: ctx.bounds.midY)
+        explosion(at: middle, big: true, delay: 0, in: ctx)
+        confetti(delay: 0.05, in: ctx)
+        caption("NEW GAME LESGO 🔥", at: middle, size: ctx.cardWidth * 0.62,
+                delay: 0.05, lifetime: 1.1, in: ctx)
+        shake(magnitude: 8, punch: 0.04, delay: 0, in: ctx)
+    }
+
+    /// Nags the player for sitting still. Called from the board's beat, and
+    /// rate-limited in here rather than at the call site because the thing
+    /// being limited is a property of the run, not of the timer.
+    func idleNag(in ctx: Context) {
+        guard lastMove > 0 else { return }
+        let idle = CACurrentMediaTime() - lastMove
+        guard idle > 6, CACurrentMediaTime() - lastNag > 5 else { return }
+        lastNag = CACurrentMediaTime()
+        let nags = ["MOVE 😤", "CHAT HE'S FROZEN", "ARE YOU MEWING", "TAP SOMETHING 💀",
+                    "THINKING? IN 2026?", "TIME IS RIZZ"]
+        caption(nags[rng.next(upperBound: nags.count)],
+                at: CGPoint(x: ctx.bounds.midX, y: ctx.bounds.midY * 0.8),
+                size: ctx.cardWidth * 0.44, delay: 0, lifetime: 1.0, in: ctx)
     }
 
     /// The win. The cascade is already busy throwing the foundations across the
@@ -150,13 +187,174 @@ final class BrainrotShow {
         flash(delay: 0.1, in: ctx)
     }
 
+    /// Puts the wash and the vignette on the board, and moves them to fit if
+    /// the window has been resized since. Idempotent — called on every beat.
+    private func installBackdrop(in ctx: Context) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if wash.superlayer !== ctx.root {
+            wash.zPosition = -1
+            wash.opacity = 0
+            // Under the cards but over the felt. The felt is whatever
+            // `draw(_:)` painted, which AppKit parks in a private sublayer of
+            // its own, so the wash is inserted directly above it where one
+            // exists; `sortSublayers` keeps that order afterwards. If it ever
+            // cannot be found the wash simply ends up invisible, which is a
+            // missing tint and not a broken board.
+            let felt = (ctx.root.sublayers ?? []).first {
+                !($0 is CardLayer) && $0.zPosition <= 0 && $0 !== wash
+            }
+            if let felt {
+                ctx.root.insertSublayer(wash, above: felt)
+            } else {
+                ctx.root.addSublayer(wash)
+            }
+
+            vignette.type = .radial
+            vignette.startPoint = CGPoint(x: 0.5, y: 0.5)
+            vignette.endPoint = CGPoint(x: 1.15, y: 1.15)
+            vignette.locations = [0.45, 1.0]
+            vignette.zPosition = Z.vignette
+            vignette.opacity = 0
+            ctx.root.addSublayer(vignette)
+        }
+        wash.frame = ctx.bounds
+        vignette.frame = ctx.bounds
+        CATransaction.commit()
+    }
+
+    /// One beat of the backdrop: the wash steps to the next colour and throbs,
+    /// and the vignette is set to whatever the combo has earned.
+    ///
+    /// Driven by a timer on the board rather than by the audio, so the mode
+    /// looks the same with the music off. It is a colour throb and not a
+    /// metronome, so a few milliseconds of timer drift against the kick is
+    /// beneath noticing.
+    func pulse(in ctx: Context) {
+        installBackdrop(in: ctx)
+        beat += 1
+        sweep(force: false)
+
+        let tint = Self.palette[beat % Self.palette.count]
+        let base: Float = 0.10 + Float(min(combo, 12)) * 0.006
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        wash.backgroundColor = tint.cgColor
+        CATransaction.commit()
+
+        let throb = CAKeyframeAnimation(keyPath: "opacity")
+        throb.values = [base * 2.2, base]
+        throb.keyTimes = [0, 1]
+        throb.duration = BrainrotAudio.beatInterval
+        throb.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        wash.opacity = base
+        wash.add(throb, forKey: "throb")
+
+        // The edge glow is the combo meter: nothing at all for the first few
+        // moves, closing in and reddening from there.
+        let heat = min(combo, 14)
+        let edge = Self.palette[(beat / 2) % Self.palette.count]
+        vignette.colors = [NSColor.clear.cgColor, edge.cgColor]
+        let strength = heat < 3 ? 0 : Float(heat - 2) * 0.055
+        let glow = CAKeyframeAnimation(keyPath: "opacity")
+        glow.values = [min(0.75, strength * 1.5), strength]
+        glow.keyTimes = [0, 1]
+        glow.duration = BrainrotAudio.beatInterval
+        vignette.opacity = strength
+        vignette.add(glow, forKey: "glow")
+    }
+
+    /// A couple of emoji drifting down the board, on and on, whether or not
+    /// anything is happening. This is the part that makes the mode feel like a
+    /// phone rather than a card table.
+    func drizzle(in ctx: Context) {
+        let start = CACurrentMediaTime()
+        let lifetime: CFTimeInterval = 2.2
+        var made: [CALayer] = []
+        for _ in 0..<(1 + rng.next(upperBound: 2)) {
+            let size = ctx.cardWidth * (0.22 + CGFloat(rng.next(upperBound: 20)) / 100)
+            let x = ctx.bounds.minX + ctx.bounds.width * CGFloat(rng.next(upperBound: 100)) / 100
+            let piece = label(Self.confettiEmoji[rng.next(upperBound: Self.confettiEmoji.count)],
+                              size: size, colour: .white, in: ctx)
+            piece.zPosition = Z.debris
+            let from = CGPoint(x: x, y: ctx.bounds.minY - size)
+            let to = CGPoint(x: x + CGFloat(rng.next(upperBound: 120)) - 60,
+                             y: ctx.bounds.maxY + size)
+            piece.position = from
+            piece.opacity = 0
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = CGFloat(rng.next(upperBound: 6)) - 3
+            spin.duration = lifetime
+            spin.beginTime = start
+            animate(piece, [
+                travel(from: from, to: to, lift: 0, duration: lifetime, start: start,
+                       timing: CAMediaTimingFunction(name: .linear)),
+                opacity(values: [0, 0.85, 0.85, 0], keyTimes: [0, 0.1, 0.8, 1],
+                        duration: lifetime, start: start),
+                spin,
+            ])
+            made.append(piece)
+        }
+        add(made, start: start, lifetime: lifetime, in: ctx)
+    }
+
+    /// After-images strung out along the path a card just took.
+    ///
+    /// They sit above the cards rather than behind the one that is moving:
+    /// a trail is translucent enough that the order does not read, and the
+    /// alternative is threading a z-position between "every card at rest" and
+    /// "the card in flight", which are two numbers apart.
+    func ghosts(of contents: Any?, size: CGSize, cornerRadius: CGFloat,
+                from: CGPoint, to: CGPoint, duration: CFTimeInterval, in ctx: Context) {
+        guard contents != nil else { return }
+        let start = CACurrentMediaTime()
+        var made: [CALayer] = []
+        for step in 1...3 {
+            let fraction = CGFloat(step) / 4
+            let ghost = CALayer()
+            ghost.bounds = CGRect(origin: .zero, size: size)
+            ghost.contents = contents
+            ghost.cornerRadius = cornerRadius
+            ghost.masksToBounds = true
+            ghost.position = CGPoint(x: from.x + (to.x - from.x) * fraction,
+                                     y: from.y + (to.y - from.y) * fraction)
+            ghost.opacity = 0
+            ghost.zPosition = Z.debris - 10
+            ghost.contentsScale = ctx.contentsScale
+            let show = duration * Double(fraction)
+            animate(ghost, [
+                opacity(values: [0.5, 0], keyTimes: [0, 1], duration: duration * 0.8,
+                        start: start + show),
+                scale(from: 1, to: 0.82, duration: duration * 0.8, start: start + show,
+                      timing: CAMediaTimingFunction(name: .easeOut)),
+            ])
+            made.append(ghost)
+        }
+        add(made, start: start, lifetime: duration * 1.8, in: ctx)
+    }
+
+    /// The board saying no. Fires where the refused card is, instead of the
+    /// explosion a legal move would have got.
+    func refuse(at point: CGPoint, in ctx: Context) {
+        let phrase = ["NUH UH 💀", "SKILL ISSUE", "NAH 🚫", "L + RATIO", "BRO 😭"]
+        caption(phrase[rng.next(upperBound: phrase.count)],
+                at: point, size: ctx.cardWidth * 0.34, delay: 0, lifetime: 0.7, in: ctx)
+    }
+
     /// Clears the table and forgets the run. Called when the mode is switched
     /// off, and on every new deal.
     func stop() {
         live.forEach { $0.layers.forEach { $0.removeFromSuperlayer() } }
         live.removeAll()
+        wash.removeAllAnimations()
+        vignette.removeAllAnimations()
+        wash.removeFromSuperlayer()
+        vignette.removeFromSuperlayer()
         combo = 0
         lastMove = 0
+        lastNag = 0
+        beat = 0
     }
 
     /// Layers currently on the board, for the play-test's leak check.

@@ -56,6 +56,10 @@ struct Preferences: Codable, Equatable {
     /// Fireballs, fireworks, confetti and captions on every move. Off, and
     /// the only setting in here that exists purely as a joke.
     var brainrot: Bool = false
+    /// The dubstep loop that comes with the mode. A separate switch from the
+    /// mode itself, and off on its own account: a window that starts playing
+    /// music because a visual setting was left on would be indefensible.
+    var brainrotMusic: Bool = false
     var windowFrame: String?
 
     static let fileName = "preferences.json"
@@ -83,6 +87,7 @@ struct Preferences: Codable, Equatable {
         backColor = try c.decodeIfPresent(CardBackColor.self, forKey: .backColor) ?? .navy
         fourColorDeck = try c.decodeIfPresent(Bool.self, forKey: .fourColorDeck) ?? false
         brainrot = try c.decodeIfPresent(Bool.self, forKey: .brainrot) ?? false
+        brainrotMusic = try c.decodeIfPresent(Bool.self, forKey: .brainrotMusic) ?? false
         windowFrame = try c.decodeIfPresent(String.self, forKey: .windowFrame)
     }
 

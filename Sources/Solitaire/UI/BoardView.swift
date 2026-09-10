@@ -77,10 +77,52 @@ final class BoardView: NSView {
     var brainrot = false {
         didSet {
             guard brainrot != oldValue else { return }
-            if !brainrot { show.stop() }
+            if brainrot {
+                startBrainrotBeat()
+            } else {
+                stopBrainrotBeat()
+                show.stop()
+                BrainrotAudio.stop()
+            }
         }
     }
     private let show = BrainrotShow()
+
+    /// Drives the parts of the mode that happen whether or not the player is
+    /// doing anything: the colour wash throbbing and the emoji drizzle. One
+    /// timer at the tempo of the soundtrack, so the board keeps moving even
+    /// when the game is sitting still — which is the entire point of the mode.
+    private var beatTimer: Timer?
+    private var beatCount = 0
+
+    private func startBrainrotBeat() {
+        stopBrainrotBeat()
+        // A block timer, so nothing holds the view alive: a board that has been
+        // thrown away must not keep a timer beating on its behalf.
+        beatTimer = Timer.scheduledTimer(withTimeInterval: BrainrotAudio.beatInterval,
+                                         repeats: true) { [weak self] timer in
+            guard let self, self.brainrot, let ctx = self.brainrotContext else {
+                timer.invalidate()
+                return
+            }
+            guard self.animationsEnabled else { return }
+            self.beatCount += 1
+            self.show.pulse(in: ctx)
+            // Every other beat, so the drizzle is a drizzle.
+            if self.beatCount % 2 == 0 { self.show.drizzle(in: ctx) }
+            // And every couple of bars, the mode notices that nothing has
+            // happened for a while and says so.
+            if self.beatCount % 8 == 0 { self.show.idleNag(in: ctx) }
+        }
+    }
+
+    private func stopBrainrotBeat() {
+        beatTimer?.invalidate()
+        beatTimer = nil
+        beatCount = 0
+    }
+
+    deinit { beatTimer?.invalidate() }
 
     private var brainrotContext: BrainrotShow.Context? {
         guard let root = layer else { return nil }
@@ -88,6 +130,9 @@ final class BoardView: NSView {
                                     cardWidth: boardLayout.cardSize.width,
                                     contentsScale: backingScale, theme: theme)
     }
+
+    /// Beats delivered since the mode was switched on, for the play-test.
+    var brainrotBeatCount: Int { beatCount }
 
     /// How many brainrot layers are on the board, for the play-test.
     var brainrotLayerCount: Int { show.liveLayerCount }
@@ -741,6 +786,7 @@ final class BoardView: NSView {
         // not say which one until you look at the card still on the source.
         let scoreBefore = game.score
         let destination = move.destination(in: game.state)
+        capturePositions()
 
         guard let record = game.perform(move) else { return false }
         Sound.play(for: move)
@@ -782,6 +828,10 @@ final class BoardView: NSView {
         if brainrot, let ctx = brainrotContext {
             show.celebrate(at: point, foundation: destination.kind == .foundation,
                            delay: delay, in: ctx)
+            // The music follows the combo: a layer joins the mix every few
+            // moves and drops back out when the player stops to think.
+            BrainrotAudio.setIntensity(combo: show.combo)
+            trailGhosts(to: destination, duration: moveDuration, in: ctx)
         }
         sparks.show(
             destination.kind == .foundation ? .burst : .puff,
@@ -795,6 +845,38 @@ final class BoardView: NSView {
             // the same screenshot twice — throws the same sparks.
             seed: UInt64(bitPattern: Int64(game.moveCount)) &* 0x9E37_79B9_7F4A_7C15 &+ 1
         )
+    }
+
+    /// Where every card sat before the move being played now. Captured because
+    /// a trail needs the departure point, and by the time the burst goes off
+    /// the layout has already moved the layer to where it landed.
+    private var positionsBeforeMove: [UInt8: CGPoint] = [:]
+
+    private func capturePositions() {
+        guard brainrot else { return }
+        positionsBeforeMove.removeAll(keepingCapacity: true)
+        for (code, cardLayer) in cardLayers {
+            positionsBeforeMove[code] = cardLayer.presentation()?.position ?? cardLayer.position
+        }
+    }
+
+    /// Strings after-images along the path each moving card took. Capped at
+    /// three cards: a thirteen-card run would otherwise put forty ghosts on the
+    /// board in one move, and the three at the bottom of the run tell the story.
+    private func trailGhosts(to destination: PileID, duration: CFTimeInterval,
+                             in ctx: BrainrotShow.Context) {
+        var drawn = 0
+        for placement in placements where placement.pile == destination {
+            guard drawn < 3,
+                  let cardLayer = cardLayers[placement.card.code],
+                  let from = positionsBeforeMove[placement.card.code] else { continue }
+            let to = CGPoint(x: placement.frame.midX, y: placement.frame.midY)
+            guard hypot(to.x - from.x, to.y - from.y) > cardLayer.bounds.width * 0.4 else { continue }
+            show.ghosts(of: cardLayer.contents, size: cardLayer.bounds.size,
+                        cornerRadius: boardLayout.cornerRadius,
+                        from: from, to: to, duration: duration, in: ctx)
+            drawn += 1
+        }
     }
 
     /// Floats the change off the card that earned it.
@@ -914,6 +996,11 @@ final class BoardView: NSView {
         default: card = nil
         }
         guard let card, let cardLayer = cardLayers[card.code], animationsEnabled else { return }
+        if brainrot, let ctx = brainrotContext {
+            show.refuse(at: CGPoint(x: cardLayer.position.x,
+                                    y: cardLayer.position.y - boardLayout.cardSize.height * 0.4),
+                        in: ctx)
+        }
         let shake = CAKeyframeAnimation(keyPath: "position.x")
         let x = cardLayer.position.x
         shake.values = [x, x - 5, x + 4, x - 3, x + 2, x]
@@ -979,6 +1066,10 @@ final class BoardView: NSView {
             guard let self else { return }
             self.isPerformingSequence = false
             self.relayout(animated: false)
+            // Twenty-eight cards landing in half a second would be twenty-eight
+            // explosions, which is a white screen. One, over the middle of the
+            // finished board, says the same thing and can be looked at.
+            if self.brainrot, let ctx = self.brainrotContext { self.show.kickoff(in: ctx) }
         }
     }
 
@@ -1008,6 +1099,7 @@ final class BoardView: NSView {
         // move to "a foundation" does not say which one until you look at the
         // card still sitting on the source.
         let destination = move.destination(in: game.state)
+        capturePositions()
         guard game.perform(move) != nil else {
             endAutoFinish()
             return

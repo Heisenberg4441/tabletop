@@ -153,6 +153,9 @@ enum MainMenu {
         // ⌘B is free — the reserved ones are ⌘H (hide) and ⌘M (minimise).
         add(menu, NSLocalizedString("Brainrot Mode", comment: "the silly one"),
             #selector(GameWindowController.toggleBrainrot(_:)), "b")
+        add(menu, NSLocalizedString("Brainrot Dubstep", comment: "the loud one"),
+            #selector(GameWindowController.toggleBrainrotMusic(_:)), "b",
+            modifiers: [.command, .shift])
         menu.addItem(.separator())
         add(menu, NSLocalizedString("Sound", comment: ""),
             #selector(GameWindowController.toggleSound(_:)))

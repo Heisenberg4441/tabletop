@@ -422,6 +422,40 @@ enum SelfTest {
             .flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) }
         check("and a round trip through disk is lossless", roundTrip == written)
 
+        print("Brainrot soundtrack")
+        // Synthesised at launch and looped for as long as the mode is on, so
+        // the failures worth catching are the ones nobody would hear as a bug:
+        // a loop that is not a whole number of beats drifts against the visual
+        // beat for ever, a layer whose ends do not meet clicks every 3.4
+        // seconds, and a silent layer looks exactly like a working one.
+        let beats = Double(BrainrotAudio.beatsPerLoop) * BrainrotAudio.beatInterval
+        check("the loop is a whole number of samples (\(BrainrotAudio.loopFrames))",
+              Double(BrainrotAudio.loopFrames) == beats * BrainrotAudio.sampleRate)
+        var quietLayers: [String] = []
+        var clicking: [String] = []
+        var hot: [String] = []
+        for layer in BrainrotAudio.Layer.allCases {
+            let samples = BrainrotAudio.renderLayer(layer)
+            let name = String(describing: layer)
+            if samples.count != BrainrotAudio.loopFrames { clicking.append(name + " (length)") }
+            let energy = samples.reduce(0.0) { $0 + Double($1 * $1) }
+            if (energy / Double(max(1, samples.count))).squareRoot() < 0.005 { quietLayers.append(name) }
+            if samples.contains(where: { abs($0) > 0.999 }) { hot.append(name) }
+            // The taper has to leave both ends at rest, or the join is a step.
+            if abs(samples.first ?? 1) > 0.001 || abs(samples.last ?? 1) > 0.001 {
+                clicking.append(name)
+            }
+        }
+        check("every layer makes a sound (\(quietLayers.joined(separator: ", ")))",
+              quietLayers.isEmpty)
+        check("every layer joins itself silently (\(clicking.joined(separator: ", ")))",
+              clicking.isEmpty)
+        check("no layer is clipped (\(hot.joined(separator: ", ")))", hot.isEmpty)
+        let mix = BrainrotAudio.renderMix()
+        let peak = mix.map { abs($0) }.max() ?? 0
+        check("the mix leaves headroom (peak \(String(format: "%.2f", peak)))",
+              peak > 0.05 && peak < 0.75)
+
         print("Solver")
         // The verdict that matters is "winnable", because that is the one the
         // game acts on: with "winnable deals only" turned on, a false positive

@@ -171,6 +171,13 @@ enum PlayTest {
         check("brainrot layers stay pooled (\(rot.mostLayers) at once, ceiling \(BrainrotShow.layerCeiling))",
               rot.mostLayers <= BrainrotShow.layerCeiling)
         check("brainrot never corrupts the board (\(rot.inconsistent))", rot.inconsistent == 0)
+        check("moving cards leave trails (\(rot.noGhosts) moves did not)", rot.noGhosts == 0)
+        check("the wash and vignette go on the board (\(rot.washMissing) boards without)",
+              rot.washMissing == 0)
+        check("the beat keeps working with the game idle (\(rot.beats)/4 boards, \(rot.beatFires) beats)",
+              rot.beats == 4 && rot.beatFires >= 8)
+        check("switching the mode off clears everything (\(rot.leftOver) left dressed)",
+              rot.leftOver == 0)
         check("drags actually ran (\(drags.attempted))", drags.attempted >= 6)
         check("a drag applies its move (\(drags.notApplied) did not)", drags.notApplied == 0)
         check("held cards are lifted off the pile (\(drags.notLifted) were not)", drags.notLifted == 0)
@@ -265,6 +272,11 @@ enum PlayTest {
         var mostLayers = 0
         var noShake = 0
         var inconsistent = 0
+        var noGhosts = 0
+        var beats = 0
+        var beatFires = 0
+        var washMissing = 0
+        var leftOver = 0
     }
 
     /// Brainrot mode, played fast and hard.
@@ -294,16 +306,58 @@ enum PlayTest {
             for _ in 0..<160 {
                 let moves = game.state.allMoves()
                 guard !moves.isEmpty else { break }
+                let before = ghostLayers(in: board)
                 guard board.perform(moves[rng.next(upperBound: moves.count)]) else { continue }
                 results.moves += 1
                 if board.brainrotLayerCount == 0 { results.quiet += 1 }
                 if board.layer?.animation(forKey: "brainrotShake") == nil { results.noShake += 1 }
+                // A move that took a card more than a token distance has to
+                // leave a trail behind it. Cards travelling nowhere — the top
+                // of the waste going to a foundation it is already next to —
+                // legitimately leave none, so this only counts long ones.
+                if longestTravel(in: board) > 40, ghostLayers(in: board) <= before {
+                    results.noGhosts += 1
+                }
                 results.mostLayers = max(results.mostLayers, board.brainrotLayerCount)
                 if !game.state.isConsistent { results.inconsistent += 1; break }
             }
-            // Turning the mode off has to take the whole circus with it.
+
+            // The beat is what keeps the mode moving while the game sits
+            // still, and it is the one part of the mode that needs a run loop:
+            // the wash and the drizzle are on a timer, not on the moves.
+            //
+            // Measured on an empty board, not on the one above: after a
+            // hundred and sixty moves the pool is pinned to its ceiling, and
+            // "more layers than before" cannot be true of a pool that is full
+            // however well the beat is working. Switching the mode off and on
+            // again clears it and leaves the timer running.
             board.brainrot = false
-            if board.brainrotLayerCount != 0 { results.quiet -= 1000 }
+            board.brainrot = true
+            // Waited for rather than sampled after a fixed window. Nothing in
+            // this file ever runs the loop, so by the time it is finally run
+            // the main queue is holding tens of thousands of expired cleanup
+            // blocks from every game played above — and draining that source
+            // starves the timer for longer than a five-beat window lasts. The
+            // first board measured this way saw no beats at all while the rest
+            // saw plenty, which is a fact about the harness and not about the
+            // mode. So: run the loop in slices until the beat is heard, with a
+            // ceiling that is still a failure if it is hit.
+            var waited = 0.0
+            while board.brainrotBeatCount < 2, waited < 8 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+                waited += 0.25
+            }
+            results.beatFires += board.brainrotBeatCount
+            if washLayers(in: board) == 0 { results.washMissing += 1 }
+            if board.brainrotLayerCount > 0 { results.beats += 1 }
+
+            // Turning the mode off has to take the whole circus with it —
+            // including the two layers that live on the board rather than
+            // being thrown and swept.
+            board.brainrot = false
+            if board.brainrotLayerCount != 0 || washLayers(in: board) != 0 {
+                results.leftOver += 1
+            }
         }
         return results
     }
@@ -422,6 +476,30 @@ enum PlayTest {
         (board.layer?.sublayers ?? []).contains {
             ($0 as? CAShapeLayer)?.path != nil && $0.opacity > 0.5
         }
+    }
+
+    /// The wash and the vignette: the two brainrot layers that are not thrown,
+    /// picked out by the bands they sit in — under every card, and over every
+    /// card but under the debris.
+    private static func washLayers(in board: BoardView) -> Int {
+        (board.layer?.sublayers ?? []).filter {
+            $0.zPosition == -1 || $0 is CAGradientLayer
+        }.count
+    }
+
+    private static func ghostLayers(in board: BoardView) -> Int {
+        (board.layer?.sublayers ?? []).filter { $0.zPosition == 1290 }.count
+    }
+
+    /// How far the furthest card moved on the last layout pass.
+    private static func longestTravel(in board: BoardView) -> CGFloat {
+        var longest: CGFloat = 0
+        for layer in cardLayers(in: board) {
+            guard let shown = layer.presentation() else { continue }
+            longest = max(longest, hypot(shown.position.x - layer.position.x,
+                                         shown.position.y - layer.position.y))
+        }
+        return longest
     }
 
     /// The spark layers a landing burst leaves on the board. The burst's own

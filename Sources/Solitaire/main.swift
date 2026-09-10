@@ -40,7 +40,17 @@ if let i = arguments.firstIndex(of: "--playtest") {
 }
 if let i = arguments.firstIndex(of: "--sounds") {
     let directory = i + 1 < arguments.count ? arguments[i + 1] : "."
-    exit(Sound.exportAll(to: directory))
+    let status = Sound.exportAll(to: directory)
+    guard status == 0 else { exit(status) }
+    // The brainrot loop goes out with the card sounds, so the soundtrack can
+    // be listened to — and measured — without playing a game.
+    do {
+        try BrainrotAudio.exportLoop(to: directory)
+    } catch {
+        FileHandle.standardError.write(Data("sounds: \(error)\n".utf8))
+        exit(1)
+    }
+    exit(0)
 }
 if arguments.contains("--controls") {
     exit(PlayTest.checkControls())

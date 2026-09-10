@@ -44,6 +44,7 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
         boardView = BoardView(game: game, theme: preferences.theme)
         boardView.brainrot = preferences.brainrot
         boardView.delegate = self
+        BrainrotAudio.isEnabled = preferences.brainrot && preferences.brainrotMusic
         boardView.translatesAutoresizingMaskIntoConstraints = false
 
         statusBar = StatusBar()
@@ -260,6 +261,26 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
         preferences.brainrot.toggle()
         preferences.save()
         boardView.brainrot = preferences.brainrot
+        applyBrainrotMusic()
+    }
+
+    /// The soundtrack. Only ever plays with the mode on: the music is part of
+    /// the joke, not a media player, and leaving it running over a quiet board
+    /// would be the worst of both.
+    @objc func toggleBrainrotMusic(_ sender: NSMenuItem) {
+        preferences.brainrotMusic.toggle()
+        preferences.save()
+        applyBrainrotMusic()
+    }
+
+    private func applyBrainrotMusic() {
+        let wanted = preferences.brainrot && preferences.brainrotMusic
+        BrainrotAudio.isEnabled = wanted
+        if wanted {
+            BrainrotAudio.start()
+        } else {
+            BrainrotAudio.stop()
+        }
     }
 
     @objc func toggleFourColorDeck(_ sender: NSMenuItem) {
@@ -358,6 +379,10 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
             item.state = preferences.fourColorDeck ? .on : .off
         case #selector(toggleBrainrot(_:)):
             item.state = preferences.brainrot ? .on : .off
+        case #selector(toggleBrainrotMusic(_:)):
+            item.state = preferences.brainrotMusic ? .on : .off
+            // Meaningless on its own, so it greys out until the mode is on.
+            return preferences.brainrot
         case #selector(setTableColor(_:)):
             item.state = preferences.table.rawValue == item.representedObject as? String ? .on : .off
         case #selector(setCardBackStyle(_:)):
@@ -507,11 +532,15 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
     func windowDidResignKey(_ notification: Notification) {
         game.pauseClock()
         syncClockTimer()
+        // Dubstep out of a window the player has clicked away from is the
+        // behaviour of malware, not of a card game.
+        BrainrotAudio.stop()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
         if game.hasStarted && !game.isWon { game.startClock() }
         syncClockTimer()
+        applyBrainrotMusic()
     }
 
     /// Covered by another window, or minimised: stop drawing a clock nobody can
@@ -527,6 +556,7 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
 
     func prepareToQuit() {
         game.pauseClock()
+        BrainrotAudio.stop()
         saveGame()
         if let window {
             preferences.windowFrame = NSStringFromRect(window.frame)
