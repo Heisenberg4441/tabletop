@@ -150,6 +150,10 @@ enum MainMenu {
         add(menu, NSLocalizedString("Four-Colour Deck", comment: ""),
             #selector(GameWindowController.toggleFourColorDeck(_:)))
         menu.addItem(.separator())
+        // ⌘B is free — the reserved ones are ⌘H (hide) and ⌘M (minimise).
+        add(menu, NSLocalizedString("Brainrot Mode", comment: "the silly one"),
+            #selector(GameWindowController.toggleBrainrot(_:)), "b")
+        menu.addItem(.separator())
         add(menu, NSLocalizedString("Sound", comment: ""),
             #selector(GameWindowController.toggleSound(_:)))
         menu.addItem(.separator())

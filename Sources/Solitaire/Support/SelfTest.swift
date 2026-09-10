@@ -399,6 +399,29 @@ enum SelfTest {
         check("one undo takes back all three", grouped.state.waste.isEmpty)
         check("and nothing is left to undo", !grouped.canUndo)
 
+        print("Preferences")
+        // A file saved before a setting existed has to keep loading, with the
+        // new setting defaulted and every choice the player made intact. The
+        // synthesised decoder throws on the first missing key and `load()`
+        // answers a throw with a factory-fresh file — which is the difference
+        // between adding a setting and quietly resetting everybody's.
+        let older = #"{"drawCount":3,"scoring":"vegas","table":"slate","windowFrame":"{{0, 74}, {1800, 1056}}"}"#
+        let restored = try? JSONDecoder().decode(Preferences.self, from: Data(older.utf8))
+        check("a preferences file from an older build still loads", restored != nil)
+        check("the choices in it survive",
+              restored?.drawCount == 3 && restored?.scoring == .vegas
+                  && restored?.table == .slate
+                  && restored?.windowFrame == "{{0, 74}, {1800, 1056}}")
+        check("settings it never heard of come back as defaults",
+              restored?.brainrot == false && restored?.clickPrefersFoundation == true
+                  && restored?.backColor == .navy)
+        var written = Preferences()
+        written.brainrot = true
+        written.table = .burgundy
+        let roundTrip = (try? JSONEncoder().encode(written))
+            .flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) }
+        check("and a round trip through disk is lossless", roundTrip == written)
+
         print("Solver")
         // The verdict that matters is "winnable", because that is the one the
         // game acts on: with "winnable deals only" turned on, a false positive

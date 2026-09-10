@@ -34,12 +34,18 @@ enum PlayTest {
             CGSize(width: 2400, height: 1400),
         ]
 
+        // First, while the main queue is still empty: this is the only check
+        // here that cares what time it is.
+        let burst = burstChecks(size: sizes[1])
+
         var hitMismatches = 0
         var inconsistencies = 0
         var clicksPerformed = 0
         var gamesWon = 0
         var offBoard = 0
         var movesWithoutAnimation = 0
+        var movesWithoutBurst = 0
+        var mostSparkLayers = 0
         var rng = DeterministicRNG(seed: 0xB0A2D)
 
         for index in 0..<games {
@@ -112,6 +118,18 @@ enum PlayTest {
                     if board.animationsEnabled, !glidingCards(in: board) {
                         movesWithoutAnimation += 1
                     }
+                    // And every move throws a burst of sparks off the card as
+                    // it lands. Same reasoning as above — the board is correct
+                    // either way — plus one thing this file is the only place
+                    // able to check: the bursts are pooled, and there is no run
+                    // loop here to deliver the cleanup they schedule. If the
+                    // sweep on the way in ever stops working, hundreds of moves
+                    // in a row is where it shows.
+                    let sparks = sparkLayers(in: board).count
+                    if board.animationsEnabled, sparks < SparkBurstPool.Scale.puff.sparkCount + 1 {
+                        movesWithoutBurst += 1
+                    }
+                    mostSparkLayers = max(mostSparkLayers, sparks)
                 }
                 if !game.state.isConsistent { inconsistencies += 1; break }
 
@@ -128,6 +146,7 @@ enum PlayTest {
         }
 
         let drags = dragChecks(sizes: sizes)
+        let rot = brainrotChecks(size: sizes[1])
 
         print("Playing \(games) games through the real board view")
         check("a click always lands on the card under it (\(hitMismatches) misses)", hitMismatches == 0)
@@ -136,6 +155,22 @@ enum PlayTest {
         check("clicks actually played (\(clicksPerformed))", clicksPerformed > games * 15)
         check("every move animates the cards it moved (\(movesWithoutAnimation) did not)",
               movesWithoutAnimation == 0)
+        check("every move bursts where the card lands (\(movesWithoutBurst) did not)",
+              movesWithoutBurst == 0)
+        check("a burst is built at once and held back (\(burst.held)/\(burst.layers) layers)",
+              burst.layers == SparkBurstPool.Scale.puff.sparkCount + 1 && burst.held == burst.layers)
+        check("and its sparks fly when the card lands (\(burst.visible) lit, \(burst.travelled) moving)",
+              burst.visible >= SparkBurstPool.Scale.puff.sparkCount
+                  && burst.travelled >= SparkBurstPool.Scale.puff.sparkCount)
+        let burstCeiling = SparkBurstPool.maximum * (SparkBurstPool.Scale.burst.sparkCount + 1)
+        check("spark layers stay pooled (\(mostSparkLayers) at once, ceiling \(burstCeiling))",
+              mostSparkLayers <= burstCeiling)
+        check("brainrot mode played (\(rot.moves) moves)", rot.moves > 200)
+        check("every brainrot move builds its effects (\(rot.quiet) built nothing)", rot.quiet == 0)
+        check("every brainrot move kicks the table (\(rot.noShake) did not)", rot.noShake == 0)
+        check("brainrot layers stay pooled (\(rot.mostLayers) at once, ceiling \(BrainrotShow.layerCeiling))",
+              rot.mostLayers <= BrainrotShow.layerCeiling)
+        check("brainrot never corrupts the board (\(rot.inconsistent))", rot.inconsistent == 0)
         check("drags actually ran (\(drags.attempted))", drags.attempted >= 6)
         check("a drag applies its move (\(drags.notApplied) did not)", drags.notApplied == 0)
         check("held cards are lifted off the pile (\(drags.notLifted) were not)", drags.notLifted == 0)
@@ -224,6 +259,119 @@ enum PlayTest {
         return results
     }
 
+    struct BrainrotResults {
+        var moves = 0
+        var quiet = 0
+        var mostLayers = 0
+        var noShake = 0
+        var inconsistent = 0
+    }
+
+    /// Brainrot mode, played fast and hard.
+    ///
+    /// The mode itself is decoration and cannot make the board wrong — but it
+    /// can bury it. Every move builds up to a hundred layers whose cleanup is
+    /// scheduled on the main queue, and a queue that never runs is exactly the
+    /// situation here, so this is where a broken sweep shows up as an unbounded
+    /// pile of layers. The rest is a sanity check that the fireworks actually
+    /// got built and that the table was kicked.
+    static func brainrotChecks(size: CGSize) -> BrainrotResults {
+        var results = BrainrotResults()
+        var rng = DeterministicRNG(seed: 0xB2A1_4207)
+
+        for deal in 1...4 {
+            let frame = NSRect(origin: .zero, size: size)
+            let window = NSWindow(contentRect: frame, styleMask: [.titled, .resizable],
+                                  backing: .buffered, defer: false)
+            let game = Game(dealNumber: deal, options: GameOptions())
+            let board = BoardView(game: game, theme: Theme())
+            board.brainrot = true
+            board.frame = frame
+            window.contentView = board
+            board.layoutSubtreeIfNeeded()
+            guard board.animationsEnabled else { return results }
+
+            for _ in 0..<160 {
+                let moves = game.state.allMoves()
+                guard !moves.isEmpty else { break }
+                guard board.perform(moves[rng.next(upperBound: moves.count)]) else { continue }
+                results.moves += 1
+                if board.brainrotLayerCount == 0 { results.quiet += 1 }
+                if board.layer?.animation(forKey: "brainrotShake") == nil { results.noShake += 1 }
+                results.mostLayers = max(results.mostLayers, board.brainrotLayerCount)
+                if !game.state.isConsistent { results.inconsistent += 1; break }
+            }
+            // Turning the mode off has to take the whole circus with it.
+            board.brainrot = false
+            if board.brainrotLayerCount != 0 { results.quiet -= 1000 }
+        }
+        return results
+    }
+
+    struct BurstResults {
+        var layers = 0
+        var held = 0
+        var visible = 0
+        var travelled = 0
+    }
+
+    /// The one check in this file that needs the clock to run.
+    ///
+    /// A landing burst is built the instant the move is played, but every one
+    /// of its animations is held back with `beginTime` so the sparks go off as
+    /// the card arrives rather than as it sets off. Nothing else here can tell
+    /// "held back" from "never runs": the layers are on the board either way
+    /// with a model opacity of zero, and not even a screenshot would show the
+    /// difference, because `render(in:)` draws model values. So this plays one
+    /// move, lets the clock past the delay, and asks the compositor what it is
+    /// actually drawing.
+    static func burstChecks(size: CGSize) -> BurstResults {
+        var results = BurstResults()
+        let frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        let game = Game(dealNumber: 1, options: GameOptions())
+        let board = BoardView(game: game, theme: Theme())
+        board.frame = frame
+        window.contentView = board
+        board.layoutSubtreeIfNeeded()
+        guard board.animationsEnabled else { return results }
+
+        _ = board.perform(.draw(count: 1))
+        let layers = sparkLayers(in: board)
+        results.layers = layers.count
+
+        let now = CACurrentMediaTime()
+        for layer in layers {
+            let animations = (layer.animationKeys() ?? []).compactMap { layer.animation(forKey: $0) }
+            if !animations.isEmpty, animations.allSatisfy({ $0.beginTime > now }) { results.held += 1 }
+        }
+
+        // Sampled over and over across the burst's whole life rather than once
+        // in the middle of it, and judged on the brightest and furthest each
+        // spark ever got. A single sample has to be taken at the right moment,
+        // and the moment is not ours to choose: `run(until:)` also has to drain
+        // whatever the main queue is holding, so a busy queue lands the sample
+        // late — with the sparks nearly faded, which looks exactly like a burst
+        // that never ran.
+        var peakOpacity = [Float](repeating: 0, count: layers.count)
+        var peakTravel = [CGFloat](repeating: 0, count: layers.count)
+        for _ in 0..<24 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            for (i, layer) in layers.enumerated() {
+                guard let shown = layer.presentation() else { continue }
+                peakOpacity[i] = max(peakOpacity[i], shown.opacity)
+                peakTravel[i] = max(peakTravel[i], hypot(shown.position.x - layer.position.x,
+                                                         shown.position.y - layer.position.y))
+            }
+        }
+        results.visible = peakOpacity.filter { $0 > 0.1 }.count
+        // The sparks fly outward; the ring stays put and opens instead, which
+        // is why one layer of every burst is expected never to move.
+        results.travelled = peakTravel.filter { $0 > 0.5 }.count
+        return results
+    }
+
     /// A run the rules will let us move between two tableau columns.
     private static func firstTableauDrag(in state: GameState) -> (from: Int, to: Int, count: Int)? {
         for from in 0..<7 {
@@ -274,6 +422,14 @@ enum PlayTest {
         (board.layer?.sublayers ?? []).contains {
             ($0 as? CAShapeLayer)?.path != nil && $0.opacity > 0.5
         }
+    }
+
+    /// The spark layers a landing burst leaves on the board. The burst's own
+    /// `zPosition` is the marker: nothing else on the table sits at that
+    /// height, and unlike the drop-target outline the sparks are plain layers
+    /// with no path to recognise them by.
+    private static func sparkLayers(in board: BoardView) -> [CALayer] {
+        (board.layer?.sublayers ?? []).filter { $0.zPosition == SparkBurstPool.zPosition }
     }
 
     /// Whether any card on the board is currently in the middle of a move.

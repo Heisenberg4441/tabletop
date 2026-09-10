@@ -42,6 +42,7 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
 
         let game = restoreGame() ?? newGameInstance()
         boardView = BoardView(game: game, theme: preferences.theme)
+        boardView.brainrot = preferences.brainrot
         boardView.delegate = self
         boardView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -251,6 +252,16 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
         preferences.save()
     }
 
+    /// Purely a display setting, so it takes effect at once and does not go
+    /// through `changeRules`: the deal, the score and the rules are untouched
+    /// by it, and being asked to start a new game to turn fireworks on would
+    /// be a strange thing to be asked.
+    @objc func toggleBrainrot(_ sender: NSMenuItem) {
+        preferences.brainrot.toggle()
+        preferences.save()
+        boardView.brainrot = preferences.brainrot
+    }
+
     @objc func toggleFourColorDeck(_ sender: NSMenuItem) {
         preferences.fourColorDeck.toggle()
         applyTheme()
@@ -345,6 +356,8 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
             item.state = preferences.soundEnabled ? .on : .off
         case #selector(toggleFourColorDeck(_:)):
             item.state = preferences.fourColorDeck ? .on : .off
+        case #selector(toggleBrainrot(_:)):
+            item.state = preferences.brainrot ? .on : .off
         case #selector(setTableColor(_:)):
             item.state = preferences.table.rawValue == item.representedObject as? String ? .on : .off
         case #selector(setCardBackStyle(_:)):

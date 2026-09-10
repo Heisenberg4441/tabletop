@@ -126,6 +126,14 @@ struct Theme: Equatable {
     let scoreGainColor = NSColor(srgbRed: 0.780, green: 1.0, blue: 0.847, alpha: 1)
     let scoreLossColor = NSColor(srgbRed: 1.0, green: 0.706, blue: 0.667, alpha: 1)
 
+    /// The sparks a landing card throws off. Warm and very light, for the same
+    /// reason the score floats are pale: half of every burst lands on the felt
+    /// and half on a white card face, and only lightness reads on both. The
+    /// accent is the same gold the hint uses, so all the "look here" feedback
+    /// in the app belongs to one family.
+    let sparkColor = NSColor(srgbRed: 1.0, green: 0.961, blue: 0.827, alpha: 1)
+    let sparkAccentColor = NSColor(srgbRed: 1.0, green: 0.812, blue: 0.373, alpha: 1)
+
     /// A cache key that changes whenever a drawn card would look different.
     var cardCacheToken: String {
         "\(backStyle.rawValue)-\(backColor.rawValue)-\(fourColorDeck)"

@@ -53,9 +53,38 @@ struct Preferences: Codable, Equatable {
     var backStyle: CardBackStyle = .lattice
     var backColor: CardBackColor = .navy
     var fourColorDeck: Bool = false
+    /// Fireballs, fireworks, confetti and captions on every move. Off, and
+    /// the only setting in here that exists purely as a joke.
+    var brainrot: Bool = false
     var windowFrame: String?
 
     static let fileName = "preferences.json"
+
+    init() {}
+
+    /// Decoded key by key, with a default for anything missing.
+    ///
+    /// The synthesised decoder throws on the first absent key, and `load()`
+    /// answers a throw with a fresh `Preferences` — so adding one field to this
+    /// struct would silently reset the table colour, the card back, the window
+    /// position and everything else a player had chosen. `GameOptions` decodes
+    /// itself by hand for the same reason.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        drawCount = try c.decodeIfPresent(Int.self, forKey: .drawCount) ?? 1
+        scoring = try c.decodeIfPresent(ScoringMode.self, forKey: .scoring) ?? .standard
+        timed = try c.decodeIfPresent(Bool.self, forKey: .timed) ?? true
+        winnableDealsOnly = try c.decodeIfPresent(Bool.self, forKey: .winnableDealsOnly) ?? false
+        clickPrefersFoundation = try c.decodeIfPresent(Bool.self, forKey: .clickPrefersFoundation) ?? true
+        autoPlaySafeCards = try c.decodeIfPresent(Bool.self, forKey: .autoPlaySafeCards) ?? false
+        soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? false
+        table = try c.decodeIfPresent(TableColor.self, forKey: .table) ?? .green
+        backStyle = try c.decodeIfPresent(CardBackStyle.self, forKey: .backStyle) ?? .lattice
+        backColor = try c.decodeIfPresent(CardBackColor.self, forKey: .backColor) ?? .navy
+        fourColorDeck = try c.decodeIfPresent(Bool.self, forKey: .fourColorDeck) ?? false
+        brainrot = try c.decodeIfPresent(Bool.self, forKey: .brainrot) ?? false
+        windowFrame = try c.decodeIfPresent(String.self, forKey: .windowFrame)
+    }
 
     static func load() -> Preferences {
         Storage.load(Preferences.self, from: fileName) ?? Preferences()

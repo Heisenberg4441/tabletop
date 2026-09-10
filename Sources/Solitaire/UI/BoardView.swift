@@ -28,6 +28,7 @@ final class BoardView: NSView {
             guard theme != oldValue else { return }
             renderer.update(theme: theme, size: boardLayout.cardSize, scale: backingScale)
             for layer in cardLayers.values { layer.refreshImage(renderer: renderer) }
+            layer?.backgroundColor = theme.table.gradient.edge.cgColor
             needsDisplay = true
         }
     }
@@ -67,6 +68,29 @@ final class BoardView: NSView {
     /// across the whole window.
     private let dropGlow = CAShapeLayer()
     private let scoreFloats = ScoreFloatPool()
+    private let sparks = SparkBurstPool()
+
+    /// Brainrot mode: fireballs, fireworks, confetti, captions, a shaking
+    /// table and cards that barrel-roll between piles. Off unless the player
+    /// asks for it, and everything it does is decoration — the rules, the
+    /// layout and the hit testing never look at it.
+    var brainrot = false {
+        didSet {
+            guard brainrot != oldValue else { return }
+            if !brainrot { show.stop() }
+        }
+    }
+    private let show = BrainrotShow()
+
+    private var brainrotContext: BrainrotShow.Context? {
+        guard let root = layer else { return nil }
+        return BrainrotShow.Context(root: root, bounds: bounds,
+                                    cardWidth: boardLayout.cardSize.width,
+                                    contentsScale: backingScale, theme: theme)
+    }
+
+    /// How many brainrot layers are on the board, for the play-test.
+    var brainrotLayerCount: Int { show.liveLayerCount }
 
     /// Set while the auto-finish or win cascade is running so input is ignored.
     private(set) var isPerformingSequence = false
@@ -86,6 +110,10 @@ final class BoardView: NSView {
         static let autoFinishStep = 0.075
         static let pickUp = 0.13
         static let glowFade = 0.13
+        /// How far into a move the landing burst goes off, as a fraction of it.
+        /// Slightly early on purpose: the card is decelerating into its last few
+        /// points by then, and sparks that start dead on arrival read as late.
+        static let landing = 0.78
     }
 
     /// Ease-out with a long tail: cards leave briskly and settle rather than
@@ -116,6 +144,11 @@ final class BoardView: NSView {
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         canDrawSubviewsIntoLayer = false
         layer?.masksToBounds = true
+        // The felt is painted by `draw(_:)` into a sublayer, so a brainrot
+        // shake — which moves every sublayer at once — would open a bare
+        // sliver at the edge of the window. Painting the layer underneath the
+        // darkest felt colour makes that sliver look like more table.
+        layer?.backgroundColor = theme.table.gradient.edge.cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -154,6 +187,7 @@ final class BoardView: NSView {
         // animation keeps flying over the new board and eventually reports a
         // win that belongs to the game that just ended.
         stopWinAnimation()
+        show.stop()
         game = newGame
         heldCards.removeAll()
         hintedCards.removeAll()
@@ -173,6 +207,7 @@ final class BoardView: NSView {
         cardLayers.values.forEach { $0.removeFromSuperlayer() }
         cardLayers.removeAll()
         scoreFloats.removeAll()
+        sparks.removeAll()
         guard let root = layer else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -251,6 +286,13 @@ final class BoardView: NSView {
             if animated {
                 cardLayer.glide(to: destination, duration: duration, timing: Self.moveCurve)
                 if inFlight { cardLayer.lift(for: duration) }
+                // Brainrot: send it round on the way. Skipped when the card is
+                // also turning over, because `flip` and `spin` write different
+                // parts of the same transform — this is the one place that
+                // knows both are about to happen.
+                if brainrot, inFlight, cardLayer.isFaceUp == placement.faceUp {
+                    cardLayer.spin(for: duration)
+                }
             } else {
                 cardLayer.stopGliding()
                 cardLayer.position = destination
@@ -684,7 +726,9 @@ final class BoardView: NSView {
             guard let cardLayer = cardLayers[card.code] else { continue }
             cardLayer.isHeld = false
             cardLayer.updateShadow(cornerRadius: boardLayout.cornerRadius, lifted: false)
-            cardLayer.setPickedUp(false, duration: animationsEnabled ? Timing.pickUp : 0)
+            // Set straight back down in brainrot mode: the card is about to
+            // barrel-roll, and the pick-up animation writes the same transform.
+            cardLayer.setPickedUp(false, duration: animationsEnabled && !brainrot ? Timing.pickUp : 0)
         }
     }
 
@@ -702,11 +746,55 @@ final class BoardView: NSView {
         Sound.play(for: move)
         announceMove(record)
         relayout(animated: true)
+        showLandingBurst(at: destination, moveDuration: Timing.move)
         showScoreChange(game.score - scoreBefore, at: destination, movedCard: record.movedCard)
         invalidateBackgroundIfNeeded()
         delegate?.boardViewDidChangeGame(self)
         if game.isWon { startWinAnimation() }
         return true
+    }
+
+    /// Throws a burst of sparks off the spot where the moving card comes down.
+    ///
+    /// The point is taken from the destination pile's *topmost* card rather
+    /// than from `boardLayout.frame(of:)`, because a tableau column's slot is
+    /// at the top of the fan and the card landed a long way below it — the same
+    /// trap `showScoreChange` works around. Reading the placements after the
+    /// relayout is what makes that the landed card, and it also covers a move
+    /// of several cards at once, where `MoveRecord` has no single moved card to
+    /// offer. Only an empty destination — the stock, after a recycle — falls
+    /// back to the slot itself.
+    ///
+    /// The burst waits out most of the move so it goes off on arrival, and is
+    /// bigger for a foundation: everything else is housekeeping, a foundation
+    /// is progress.
+    private func showLandingBurst(at destination: PileID, moveDuration: CFTimeInterval) {
+        guard animationsEnabled, let root = layer else { return }
+        let landing = placements.last { $0.pile == destination }?.frame
+            ?? boardLayout.frame(of: destination)
+        let point = CGPoint(x: landing.midX, y: landing.midY)
+        let delay = moveDuration * Timing.landing
+
+        // Brainrot mode goes off in the same place at the same moment, and on
+        // top of the sparks rather than instead of them: at that size nobody
+        // is going to notice eleven extra dots, and the mode is meant to look
+        // like the ordinary game with the volume knob broken off.
+        if brainrot, let ctx = brainrotContext {
+            show.celebrate(at: point, foundation: destination.kind == .foundation,
+                           delay: delay, in: ctx)
+        }
+        sparks.show(
+            destination.kind == .foundation ? .burst : .puff,
+            at: point,
+            cardWidth: boardLayout.cardSize.width,
+            delay: delay,
+            in: root,
+            theme: theme,
+            contentsScale: backingScale,
+            // Per move rather than per call, so replaying a game — or taking
+            // the same screenshot twice — throws the same sparks.
+            seed: UInt64(bitPattern: Int64(game.moveCount)) &* 0x9E37_79B9_7F4A_7C15 &+ 1
+        )
     }
 
     /// Floats the change off the card that earned it.
@@ -912,24 +1000,38 @@ final class BoardView: NSView {
 
     private func stepAutoFinish() {
         let cycleAllowance = game.state.stock.count + game.state.waste.count + 2
-        guard idleStockMoves <= cycleAllowance,
-              let move = game.state.autoFinishMove(),
-              game.perform(move) != nil
-        else {
-            game.endUndoGroup()
-            isPerformingSequence = false
-            delegate?.boardViewDidChangeGame(self)
-            if game.isWon { startWinAnimation() }
+        guard idleStockMoves <= cycleAllowance, let move = game.state.autoFinishMove() else {
+            endAutoFinish()
+            return
+        }
+        // Read before the move, for the same reason `perform` reads it there: a
+        // move to "a foundation" does not say which one until you look at the
+        // card still sitting on the source.
+        let destination = move.destination(in: game.state)
+        guard game.perform(move) != nil else {
+            endAutoFinish()
             return
         }
         idleStockMoves = move.isStockCycling ? idleStockMoves + 1 : 0
         Sound.play(for: move)
-        relayout(animated: true, duration: Timing.autoFinishStep * 1.6)
+        let duration = Timing.autoFinishStep * 1.6
+        relayout(animated: true, duration: duration)
+        showLandingBurst(at: destination, moveDuration: duration)
         invalidateBackgroundIfNeeded()
         delegate?.boardViewDidChangeGame(self)
         DispatchQueue.main.asyncAfter(deadline: .now() + Timing.autoFinishStep) { [weak self] in
             self?.stepAutoFinish()
         }
+    }
+
+    /// Closes the undo group and hands the board back to the player. Every way
+    /// out of the sequence — nothing left to play, a move the rules refused,
+    /// or a cycle that got nowhere — ends here.
+    private func endAutoFinish() {
+        game.endUndoGroup()
+        isPerformingSequence = false
+        delegate?.boardViewDidChangeGame(self)
+        if game.isWon { startWinAnimation() }
     }
 
     // MARK: Win
@@ -943,6 +1045,7 @@ final class BoardView: NSView {
         }
         isPerformingSequence = true
         Sound.play(.win)
+        if brainrot, let ctx = brainrotContext { show.finale(in: ctx) }
         let cascade = WinCascade(view: self, cardLayers: cardLayers, layout: boardLayout, state: game.state)
         self.cascade = cascade
         cascade.start { [weak self] in
@@ -961,6 +1064,7 @@ final class BoardView: NSView {
     func stopWinAnimation() {
         cascade?.stop()
         cascade = nil
+        show.stop()
         isPerformingSequence = false
     }
 

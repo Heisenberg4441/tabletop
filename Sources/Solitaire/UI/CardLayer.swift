@@ -14,6 +14,7 @@ final class CardLayer: CALayer {
         static let liftRadius = "liftRadius"
         static let liftOffset = "liftOffset"
         static let pickUp = "pickUp"
+        static let spin = "spin"
     }
 
     /// How much larger a card is drawn while the player is holding it. Enough
@@ -143,6 +144,7 @@ final class CardLayer: CALayer {
         removeAnimation(forKey: Key.liftOpacity)
         removeAnimation(forKey: Key.liftRadius)
         removeAnimation(forKey: Key.liftOffset)
+        removeAnimation(forKey: Key.spin)
     }
 
     /// Swells the shadow for the length of a move and sets it back down again,
@@ -165,6 +167,24 @@ final class CardLayer: CALayer {
         add(hop("shadowRadius", from: shadowRadius, to: bounds.width * 0.09), forKey: Key.liftRadius)
         add(hop("shadowOffset.height", from: shadowOffset.height, to: bounds.width * 0.05),
             forKey: Key.liftOffset)
+    }
+
+    /// Sends the card round once on its way across the table — brainrot mode's
+    /// contribution to the compositor.
+    ///
+    /// Only ever asked for on a card that is not also turning over: `flip`
+    /// drives `transform.scale.x` and this drives `transform.rotation.z`, and
+    /// two animations writing different parts of one transform is a fight with
+    /// no winner. `BoardView` is where both decisions are made, so that is
+    /// where the choice between them is.
+    func spin(for duration: CFTimeInterval) {
+        guard duration > 0 else { return }
+        let roll = CABasicAnimation(keyPath: "transform.rotation.z")
+        roll.fromValue = 0
+        roll.toValue = 2 * CGFloat.pi
+        roll.duration = duration
+        roll.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.6, 0.3, 1)
+        add(roll, forKey: Key.spin)
     }
 
     /// Turns the card over with a horizontal squeeze, swapping the artwork at
