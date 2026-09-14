@@ -8,7 +8,7 @@
 //  that spend the whole budget.
 //
 
-import Foundation
+import AppKit
 
 enum Benchmark {
 
@@ -28,7 +28,58 @@ enum Benchmark {
         let elapsed = Date().timeIntervalSince(start)
         print(String(format: "  53 card bitmaps in %.1f ms (%.2f MB cached)",
                      elapsed * 1000, Double(renderer.cacheBytes) / 1_048_576))
+
+        print("")
+        print("Table rendering, 1280x800 at 2x")
+        // The one drawing cost that is paid during play rather than once per
+        // deal: the board repaints its background whenever a pile empties or
+        // fills, so anything slow here shows up as a hitch on an ordinary move.
+        measureTable(apple: false)
+        measureTable(apple: true)
         return 0
+    }
+
+    private static func measureTable(apple: Bool) {
+        let size = CGSize(width: 1280, height: 800)
+        let scale: CGFloat = 2
+        guard let ctx = CGContext(
+            data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return }
+        ctx.scaleBy(x: scale, y: scale)
+        let rect = CGRect(origin: .zero, size: size)
+
+        // Reported cold and warm, because Apple mode caches the finished
+        // table: the first number is what a resize pays, the second is what an
+        // ordinary move pays, and quoting only one of them would be a lie
+        // either way.
+        let runs = 10
+        var first: TimeInterval = 0
+        var start = Date()
+        for run in 0..<runs {
+            if run == 1 {
+                first = Date().timeIntervalSince(start)
+                start = Date()
+            }
+            if apple {
+                AppleStyle.drawTable(.green, in: rect, context: ctx, cardWidth: 110)
+            } else {
+                ctx.setFillColor(TableColor.green.gradient.edge.cgColor)
+                ctx.fill(rect)
+                let (center, edge) = TableColor.green.gradient
+                if let g = AppleStyle.gradient([(center, 0), (edge, 1)]) {
+                    let mid = CGPoint(x: rect.midX, y: rect.midY)
+                    ctx.drawRadialGradient(g, startCenter: mid, startRadius: 0, endCenter: mid,
+                                           endRadius: max(rect.width, rect.height) * 0.72,
+                                           options: [.drawsAfterEndLocation])
+                }
+            }
+        }
+        let warm = Date().timeIntervalSince(start) / Double(runs - 1) * 1000
+        print(String(format: "  %@ %.1f ms cold, %.1f ms per repaint after",
+                     apple ? "Apple " : "flat  ", first * 1000, warm))
     }
 
     private static func measure(deals: Int, drawCount: Int) {

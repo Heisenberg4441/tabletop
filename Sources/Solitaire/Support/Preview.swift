@@ -9,8 +9,10 @@ import AppKit
 
 enum Preview {
 
-    static func renderDeck(to path: String, cardWidth: CGFloat = 120, scale: CGFloat = 2) -> Int32 {
-        let theme = Theme()
+    static func renderDeck(to path: String, apple: Bool = false,
+                           cardWidth: CGFloat = 120, scale: CGFloat = 2) -> Int32 {
+        var theme = Theme()
+        theme.apple = apple
         let height = (cardWidth / 0.70).rounded()
         let renderer = CardRenderer(theme: theme, size: CGSize(width: cardWidth, height: height), scale: scale)
 
@@ -36,7 +38,7 @@ enum Preview {
         ctx.scaleBy(x: 1, y: -1)
 
         // The felt, so the cards are judged against the background they live on.
-        let (center, edge) = theme.table.gradient
+        let (center, edge) = apple ? theme.table.appleGradient : theme.table.gradient
         if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
                                      colors: [center.cgColor, edge.cgColor] as CFArray,
                                      locations: [0, 1]) {

@@ -98,30 +98,48 @@ final class CardRenderer {
 
     private func drawFace(_ card: Card, in rect: CGRect, context ctx: CGContext) {
         let inset = rect.insetBy(dx: 0.5, dy: 0.5)
-        ctx.addPath(cardShape(inset))
-        ctx.setFillColor(theme.faceColor.cgColor)
-        ctx.fillPath()
+        let shape = cardShape(inset)
 
-        ctx.addPath(cardShape(inset))
-        ctx.setStrokeColor(theme.faceEdge.withAlphaComponent(0.55).cgColor)
-        ctx.setLineWidth(1)
-        ctx.strokePath()
+        if theme.apple {
+            AppleStyle.cardStock(shape, in: inset, context: ctx)
+        } else {
+            ctx.addPath(shape)
+            ctx.setFillColor(theme.faceColor.cgColor)
+            ctx.fillPath()
+
+            ctx.addPath(shape)
+            ctx.setStrokeColor(theme.faceEdge.withAlphaComponent(0.55).cgColor)
+            ctx.setLineWidth(1)
+            ctx.strokePath()
+        }
 
         let color = theme.color(for: card.suit).cgColor
         let w = rect.width
 
-        drawCornerIndex(card, in: rect, context: ctx, color: color)
+        func printing() {
+            drawCornerIndex(card, in: rect, context: ctx, color: color)
 
-        if card.rank.isCourt {
-            drawCourt(card, in: rect, context: ctx, color: color)
-        } else if card.rank == .ace {
-            let side = w * 0.46
-            let box = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
-            ctx.addPath(SuitPath.path(for: card.suit, in: box))
-            ctx.setFillColor(color)
-            ctx.fillPath()
+            if card.rank.isCourt {
+                drawCourt(card, in: rect, context: ctx, color: color)
+            } else if card.rank == .ace {
+                let side = w * 0.46
+                let box = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
+                ctx.addPath(SuitPath.path(for: card.suit, in: box))
+                ctx.setFillColor(color)
+                ctx.fillPath()
+            } else {
+                drawPips(card, in: rect, context: ctx, color: color)
+            }
+        }
+
+        // Apple mode presses the ink into the stock and then varnishes over the
+        // top of it, in that order — a gloss under the printing would look like
+        // the ink was floating above the card.
+        if theme.apple {
+            AppleStyle.inked(ctx, width: w) { _ in printing() }
+            AppleStyle.gloss(shape, in: inset, context: ctx)
         } else {
-            drawPips(card, in: rect, context: ctx, color: color)
+            printing()
         }
     }
 
@@ -221,10 +239,29 @@ final class CardRenderer {
         ctx.addPath(panelPath)
         ctx.setFillColor(theme.color(for: card.suit).withAlphaComponent(0.042).cgColor)
         ctx.fillPath()
+
+        // Apple mode doubles the frame — a heavy rule with a hairline just
+        // inside it, which is the detail that separates a printed card from a
+        // drawn rectangle.
+        //
+        // It does not engrave the panel. That was tried, and at the size a
+        // court card is actually looked at, a rosette behind the letter is not
+        // ornament, it is a grey smudge with a K on it. Restraint is the more
+        // Apple answer and the more legible one.
+
         ctx.addPath(panelPath)
         ctx.setStrokeColor(theme.color(for: card.suit).withAlphaComponent(0.55).cgColor)
         ctx.setLineWidth(max(0.75, w * 0.010))
         ctx.strokePath()
+
+        if theme.apple {
+            let gap = w * 0.028
+            ctx.addPath(CGPath(roundedRect: panel.insetBy(dx: gap, dy: gap),
+                               cornerWidth: w * 0.030, cornerHeight: w * 0.030, transform: nil))
+            ctx.setStrokeColor(theme.color(for: card.suit).withAlphaComponent(0.30).cgColor)
+            ctx.setLineWidth(max(0.4, w * 0.005))
+            ctx.strokePath()
+        }
 
         // The dividing line, drawn as a hairline pair for a printed feel.
         ctx.setStrokeColor(theme.color(for: card.suit).withAlphaComponent(0.38).cgColor)
@@ -295,9 +332,15 @@ final class CardRenderer {
 
     private func drawBack(in rect: CGRect, context ctx: CGContext) {
         let inset = rect.insetBy(dx: 0.5, dy: 0.5)
-        ctx.addPath(cardShape(inset))
-        ctx.setFillColor(NSColor.white.cgColor)
-        ctx.fillPath()
+        let shape = cardShape(inset)
+
+        if theme.apple {
+            AppleStyle.cardStock(shape, in: inset, context: ctx)
+        } else {
+            ctx.addPath(shape)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillPath()
+        }
 
         // Real cards leave a white margin around the printed pattern.
         let margin = rect.width * 0.055
@@ -318,6 +361,7 @@ final class CardRenderer {
         case .weave: drawWeave(in: field, context: ctx)
         case .plain: drawPlain(in: field, context: ctx)
         }
+        if theme.apple { dressBackField(field, context: ctx) }
         ctx.restoreGState()
 
         ctx.addPath(fieldPath)
@@ -325,10 +369,85 @@ final class CardRenderer {
         ctx.setLineWidth(max(0.75, rect.width * 0.009))
         ctx.strokePath()
 
-        ctx.addPath(cardShape(inset))
+        if theme.apple {
+            // The printed field sits fractionally below the surface of the
+            // stock it was pressed into, so it gets the recess treatment the
+            // empty piles get — at a fraction of the depth.
+            AppleStyle.innerShadow(fieldPath, in: field, context: ctx,
+                                   color: NSColor(white: 0, alpha: 0.45),
+                                   radius: rect.width * 0.030,
+                                   offset: CGSize(width: 0, height: rect.width * 0.010))
+            AppleStyle.gloss(shape, in: inset, context: ctx, strength: 0.85)
+        }
+
+        ctx.addPath(shape)
         ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.20).cgColor)
         ctx.setLineWidth(1)
         ctx.strokePath()
+    }
+
+    /// What Apple mode adds on top of whichever back pattern the player chose:
+    /// engraving, a border rule, and a medallion in the middle.
+    ///
+    /// It goes over the pattern rather than replacing it so the four back
+    /// styles still mean something in this mode — a lattice is still a lattice,
+    /// it has simply been printed by someone with a better press. The caller
+    /// has already clipped to the field.
+    private func dressBackField(_ field: CGRect, context ctx: CGContext) {
+        let w = size.width
+
+        AppleStyle.guilloche(in: field, context: ctx,
+                             color: theme.backColor.highlight.withAlphaComponent(0.30),
+                             lineWidth: max(0.3, w * 0.0035))
+
+        // A double rule inside the field, the way a back is bordered.
+        for (inset, alpha) in [(w * 0.030, 0.45), (w * 0.052, 0.22)] {
+            ctx.addPath(CGPath(roundedRect: field.insetBy(dx: inset, dy: inset),
+                               cornerWidth: w * 0.030, cornerHeight: w * 0.030, transform: nil))
+            ctx.setStrokeColor(theme.backColor.highlight.withAlphaComponent(alpha).cgColor)
+            ctx.setLineWidth(max(0.4, w * 0.006))
+            ctx.strokePath()
+        }
+
+        // The medallion at the centre of the lace: a small struck disc, the
+        // way a maker's mark sits on a real back. Small and hard-edged on
+        // purpose — the first version was a third of the card wide and soft,
+        // and at card size that is not a medallion, it is a smudge.
+        let side = min(field.width, field.height) * 0.20
+        let disc = CGRect(x: field.midX - side / 2, y: field.midY - side / 2, width: side, height: side)
+        let discPath = CGPath(ellipseIn: disc, transform: nil)
+        ctx.saveGState()
+        ctx.addPath(discPath)
+        ctx.clip()
+        AppleStyle.fillVertical(disc, context: ctx, [
+            (theme.backColor.highlight, 0),
+            (theme.backColor.base, 0.55),
+            (theme.backColor.shade, 1),
+        ])
+        ctx.restoreGState()
+
+        ctx.addPath(discPath)
+        ctx.setStrokeColor(theme.backColor.highlight.withAlphaComponent(0.85).cgColor)
+        ctx.setLineWidth(max(0.5, w * 0.008))
+        ctx.strokePath()
+
+        // A lozenge struck into it, dark side up so it reads as a hollow.
+        let lozenge = CGMutablePath()
+        let l = disc.insetBy(dx: side * 0.32, dy: side * 0.20)
+        lozenge.move(to: CGPoint(x: l.midX, y: l.minY))
+        lozenge.addLine(to: CGPoint(x: l.maxX, y: l.midY))
+        lozenge.addLine(to: CGPoint(x: l.midX, y: l.maxY))
+        lozenge.addLine(to: CGPoint(x: l.minX, y: l.midY))
+        lozenge.closeSubpath()
+        var down = CGAffineTransform(translationX: 0, y: max(0.5, w * 0.006))
+        if let lit = lozenge.copy(using: &down) {
+            ctx.addPath(lit)
+            ctx.setFillColor(theme.backColor.highlight.withAlphaComponent(0.55).cgColor)
+            ctx.fillPath()
+        }
+        ctx.addPath(lozenge)
+        ctx.setFillColor(theme.backColor.shade.cgColor)
+        ctx.fillPath()
     }
 
     private func drawLattice(in rect: CGRect, context ctx: CGContext) {
@@ -416,6 +535,11 @@ final class CardRenderer {
 
     private func indexFont(size: CGFloat) -> CTFont {
         let base = NSFont.systemFont(ofSize: size, weight: .bold)
+        // The rounded design is friendly, which is right for the flat deck and
+        // wrong for this one: a printed index is a bold grotesque with square
+        // terminals, and rounding them off is what makes a card look like a
+        // toy instead of a card.
+        if theme.apple { return base as CTFont }
         if let descriptor = base.fontDescriptor.withDesign(.rounded) {
             return CTFontCreateWithFontDescriptor(descriptor as CTFontDescriptor, size, nil)
         }

@@ -27,8 +27,18 @@ final class BoardView: NSView {
         didSet {
             guard theme != oldValue else { return }
             renderer.update(theme: theme, size: boardLayout.cardSize, scale: backingScale)
-            for layer in cardLayers.values { layer.refreshImage(renderer: renderer) }
-            layer?.backgroundColor = theme.table.gradient.edge.cgColor
+            for cardLayer in cardLayers.values {
+                cardLayer.apple = theme.apple
+                cardLayer.refreshImage(renderer: renderer)
+                // The mode changes how deep a card sits above the table, and
+                // the resting shadow is written once rather than per frame —
+                // so switching modes has to rewrite it here or every card keeps
+                // the old depth until something else moves it.
+                cardLayer.updateShadow(cornerRadius: boardLayout.cornerRadius,
+                                       lifted: cardLayer.isHeld)
+            }
+            layer?.backgroundColor = feltEdgeColor
+            updateDropGlow()
             needsDisplay = true
         }
     }
@@ -46,6 +56,11 @@ final class BoardView: NSView {
     private var pendingTarget: ClickTarget = .nothing
     private var isDragging = false
     private var dropHighlight: PileID?
+    /// Where the pointer was at the previous mouse-moved event, and the rolling
+    /// average of how fast it is travelling. Only Apple mode reads them, to
+    /// lean the cards it is carrying.
+    private var lastDragPoint: CGPoint = .zero
+    private var dragLean: CGVector = .zero
 
     /// Synthetic elements standing in for the piles, since the board is drawn
     /// into layers and has no subviews for VoiceOver to find.
@@ -193,7 +208,13 @@ final class BoardView: NSView {
         // shake — which moves every sublayer at once — would open a bare
         // sliver at the edge of the window. Painting the layer underneath the
         // darkest felt colour makes that sliver look like more table.
-        layer?.backgroundColor = theme.table.gradient.edge.cgColor
+        layer?.backgroundColor = feltEdgeColor
+    }
+
+    /// The darkest colour on the table, painted behind everything so that a
+    /// brainrot shake cannot open a bare sliver at the window's edge.
+    private var feltEdgeColor: CGColor {
+        (theme.apple ? theme.table.appleGradient.edge : theme.table.gradient.edge).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -259,6 +280,7 @@ final class BoardView: NSView {
         installDropGlow(in: root)
         for card in Card.full {
             let cardLayer = CardLayer(card: card)
+            cardLayer.apple = theme.apple
             cardLayer.contentsScale = backingScale
             cardLayers[card.code] = cardLayer
             root.addSublayer(cardLayer)
@@ -467,6 +489,11 @@ final class BoardView: NSView {
     }
 
     private func drawFelt(in ctx: CGContext) {
+        if theme.apple {
+            AppleStyle.drawTable(theme.table, in: bounds, context: ctx,
+                                 cardWidth: boardLayout.cardWidth)
+            return
+        }
         let (center, edge) = theme.table.gradient
         ctx.setFillColor(edge.cgColor)
         ctx.fill(bounds)
@@ -499,13 +526,17 @@ final class BoardView: NSView {
             let path = CGPath(roundedRect: rect, cornerWidth: boardLayout.cornerRadius,
                               cornerHeight: boardLayout.cornerRadius, transform: nil)
             if !occupied {
-                ctx.addPath(path)
-                ctx.setFillColor(theme.emptySlotFill.cgColor)
-                ctx.fillPath()
-                ctx.addPath(path)
-                ctx.setStrokeColor(theme.emptySlotStroke.cgColor)
-                ctx.setLineWidth(1.5)
-                ctx.strokePath()
+                if theme.apple {
+                    AppleStyle.drawSlot(path, in: rect, context: ctx)
+                } else {
+                    ctx.addPath(path)
+                    ctx.setFillColor(theme.emptySlotFill.cgColor)
+                    ctx.fillPath()
+                    ctx.addPath(path)
+                    ctx.setStrokeColor(theme.emptySlotStroke.cgColor)
+                    ctx.setLineWidth(1.5)
+                    ctx.strokePath()
+                }
             }
 
             switch slot.pile.kind {
@@ -516,9 +547,14 @@ final class BoardView: NSView {
                 let side = rect.width * 0.42
                 let box = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2,
                                  width: side, height: side)
-                ctx.addPath(SuitPath.path(for: suit, in: box))
-                ctx.setFillColor(theme.emptySlotGlyph.cgColor)
-                ctx.fillPath()
+                let glyph = SuitPath.path(for: suit, in: box)
+                if theme.apple {
+                    AppleStyle.engrave(glyph, in: rect, context: ctx)
+                } else {
+                    ctx.addPath(glyph)
+                    ctx.setFillColor(theme.emptySlotGlyph.cgColor)
+                    ctx.fillPath()
+                }
             case .stock where !occupied:
                 drawStockGlyph(in: rect, context: ctx)
             default:
@@ -551,7 +587,7 @@ final class BoardView: NSView {
     /// path has nothing to fade — dropping it would make the outline vanish
     /// rather than dim.
     private func updateDropGlow() {
-        let colour = theme.dropTargetColor.cgColor
+        let colour = (theme.apple ? theme.appleDropTargetColor : theme.dropTargetColor).cgColor
         dropGlow.strokeColor = colour
         dropGlow.shadowColor = colour
         dropGlow.shadowRadius = boardLayout.cornerRadius * 0.9
@@ -572,29 +608,38 @@ final class BoardView: NSView {
         let side = rect.width * 0.40
         let center = CGPoint(x: rect.midX, y: rect.midY)
         let radius = side / 2
-        ctx.setStrokeColor(theme.emptySlotGlyph.cgColor)
-        ctx.setLineWidth(max(1.6, rect.width * 0.030))
-        ctx.setLineCap(.round)
+        let width = max(1.6, rect.width * 0.030)
 
+        // Built as a path rather than stroked straight onto the context, so
+        // Apple mode can cut the same shape into the felt instead of painting
+        // it on. The geometry has one description either way.
+        let glyph = CGMutablePath()
         if game.state.hasRedealsRemaining {
-            ctx.addArc(center: center, radius: radius,
-                       startAngle: -.pi * 0.35, endAngle: .pi * 1.15, clockwise: false)
-            ctx.strokePath()
+            glyph.addArc(center: center, radius: radius,
+                         startAngle: -.pi * 0.35, endAngle: .pi * 1.15, clockwise: false)
             // Arrow head at the open end of the arc.
             let tip = CGPoint(x: center.x + radius * cos(-.pi * 0.35),
                               y: center.y + radius * sin(-.pi * 0.35))
             let barb = radius * 0.42
-            ctx.move(to: CGPoint(x: tip.x - barb * 0.2, y: tip.y - barb))
-            ctx.addLine(to: tip)
-            ctx.addLine(to: CGPoint(x: tip.x + barb, y: tip.y + barb * 0.1))
-            ctx.strokePath()
+            glyph.move(to: CGPoint(x: tip.x - barb * 0.2, y: tip.y - barb))
+            glyph.addLine(to: tip)
+            glyph.addLine(to: CGPoint(x: tip.x + barb, y: tip.y + barb * 0.1))
         } else {
-            ctx.move(to: CGPoint(x: center.x - radius, y: center.y - radius))
-            ctx.addLine(to: CGPoint(x: center.x + radius, y: center.y + radius))
-            ctx.move(to: CGPoint(x: center.x + radius, y: center.y - radius))
-            ctx.addLine(to: CGPoint(x: center.x - radius, y: center.y + radius))
-            ctx.strokePath()
+            glyph.move(to: CGPoint(x: center.x - radius, y: center.y - radius))
+            glyph.addLine(to: CGPoint(x: center.x + radius, y: center.y + radius))
+            glyph.move(to: CGPoint(x: center.x + radius, y: center.y - radius))
+            glyph.addLine(to: CGPoint(x: center.x - radius, y: center.y + radius))
         }
+
+        if theme.apple {
+            AppleStyle.engrave(glyph, in: rect, context: ctx, stroke: width)
+            return
+        }
+        ctx.addPath(glyph)
+        ctx.setStrokeColor(theme.emptySlotGlyph.cgColor)
+        ctx.setLineWidth(width)
+        ctx.setLineCap(.round)
+        ctx.strokePath()
     }
 
     // MARK: Input
@@ -604,6 +649,8 @@ final class BoardView: NSView {
         clearHint()
         let point = convert(event.locationInWindow, from: nil)
         dragStart = point
+        lastDragPoint = point
+        dragLean = .zero
         isDragging = false
         pendingTarget = boardLayout.target(at: point, state: game.state, placements: placements)
     }
@@ -620,11 +667,23 @@ final class BoardView: NSView {
 
         let dx = point.x - dragStart.x
         let dy = point.y - dragStart.y
+        // Apple mode leans the cards into the direction of travel. The velocity
+        // is smoothed heavily before it is used: the raw step between two mouse
+        // events is noisy enough that feeding it straight in makes the card
+        // shiver rather than lean.
+        if theme.apple {
+            let step = CGVector(dx: point.x - lastDragPoint.x, dy: point.y - lastDragPoint.y)
+            dragLean = CGVector(dx: dragLean.dx * 0.72 + step.dx * 0.28,
+                                dy: dragLean.dy * 0.72 + step.dy * 0.28)
+        }
+        lastDragPoint = point
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for card in heldCards {
             guard let cardLayer = cardLayers[card.code], let origin = heldOrigin[card.code] else { continue }
             cardLayer.position = CGPoint(x: origin.x + dx, y: origin.y + dy)
+            if theme.apple { cardLayer.setDragLean(dx: dragLean.dx, dy: dragLean.dy) }
         }
         CATransaction.commit()
 

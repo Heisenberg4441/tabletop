@@ -147,6 +147,7 @@ enum PlayTest {
 
         let drags = dragChecks(sizes: sizes)
         let rot = brainrotChecks(size: sizes[1])
+        let apple = appleChecks(size: sizes[1])
 
         print("Playing \(games) games through the real board view")
         check("a click always lands on the card under it (\(hitMismatches) misses)", hitMismatches == 0)
@@ -183,6 +184,16 @@ enum PlayTest {
         check("held cards are lifted off the pile (\(drags.notLifted) were not)", drags.notLifted == 0)
         check("the drop target lights up (\(drags.noGlow) did not)", drags.noGlow == 0)
         check("dropped cards are set back down (\(drags.notSettled) were not)", drags.notSettled == 0)
+        check("Apple mode draws a different table", apple.tableDiffers)
+        check("Apple mode prints different cards (\(apple.sameArtwork) came out identical)",
+              apple.sameArtwork == 0)
+        check("switching Apple mode on reaches every card (\(apple.staleLayers) stale)",
+              apple.staleLayers == 0)
+        check("cards turn over in perspective (\(apple.flatFlips) squeezed instead)",
+              apple.flips > 0 && apple.flatFlips == 0)
+        check("a held card leans in the hand (\(apple.heldFlat) did not)",
+              apple.held > 0 && apple.heldFlat == 0)
+        check("Apple mode never corrupts the board (\(apple.inconsistent))", apple.inconsistent == 0)
         print("  info won \(gamesWon)/\(games) clicking more or less at random")
 
         print("")
@@ -559,6 +570,142 @@ extension PlayTest {
     /// action, which means it can look perfectly correct in the source and do
     /// nothing at all at runtime. There is no way to see that by reading; the
     /// chain has to be walked.
+    struct AppleResults {
+        var tableDiffers = false
+        var sameArtwork = 0
+        var staleLayers = 0
+        var flips = 0
+        var flatFlips = 0
+        var held = 0
+        var heldFlat = 0
+        var inconsistent = 0
+    }
+
+    /// Apple mode, which is all surface and therefore easy to get wrong in
+    /// ways nothing else here would notice.
+    ///
+    /// Three things are worth asserting and none of them are visible to the
+    /// other checks. First, that the mode actually changes what is drawn —
+    /// a theme flag that silently fails to reach the renderer would leave the
+    /// board looking exactly as it did, and the only complaint would come from
+    /// the player. Second, that switching it on mid-game reaches the fifty-two
+    /// layers already on the table, which is a cache-invalidation question and
+    /// so the kind that goes wrong quietly. Third, that the two pieces of real
+    /// three-dimensional behaviour — the turn and the lean — are producing
+    /// matrices that are genuinely not flat, because a perspective animation
+    /// that has lost its `m34` still animates, still looks like something, and
+    /// is simply the old squeeze wearing a new name.
+    static func appleChecks(size: CGSize) -> AppleResults {
+        var results = AppleResults()
+        var flat = Theme()
+        flat.apple = false
+        var apple = Theme()
+        apple.apple = true
+
+        // The artwork, compared bitmap for bitmap at one size.
+        let cardSize = CGSize(width: 100, height: 143)
+        let flatCards = CardRenderer(theme: flat, size: cardSize, scale: 2)
+        let appleCards = CardRenderer(theme: apple, size: cardSize, scale: 2)
+        for card in Card.full {
+            if bitmap(flatCards.faceImage(for: card)) == bitmap(appleCards.faceImage(for: card)) {
+                results.sameArtwork += 1
+            }
+        }
+        if bitmap(flatCards.backImage()) == bitmap(appleCards.backImage()) { results.sameArtwork += 1 }
+
+        let frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: frame, styleMask: [.titled, .resizable],
+                              backing: .buffered, defer: false)
+        let game = Game(dealNumber: 9, options: GameOptions())
+        let board = BoardView(game: game, theme: flat)
+        board.frame = frame
+        window.contentView = board
+        board.layoutSubtreeIfNeeded()
+        board.displayIfNeeded()
+
+        // The felt, drawn both ways into the same size of bitmap.
+        let before = tableBitmap(of: board)
+        board.theme = apple
+        board.displayIfNeeded()
+        let after = tableBitmap(of: board)
+        results.tableDiffers = before != nil && after != nil && before != after
+
+        // Switching the mode on has to reach the cards already on the table:
+        // both the picture on them and the depth they sit at.
+        let shallow = cardLayers(in: board).filter { $0.shadowRadius <= board.boardLayout.cardSize.width * 0.03 }
+        results.staleLayers = shallow.count
+
+        // Turning over: the flip has to be a sampled rotation, not a squeeze
+        // along x. Played until some move uncovers a face-down card.
+        var rng = DeterministicRNG(seed: 0xA99_1E)
+        for _ in 0..<200 {
+            let moves = game.state.allMoves()
+            guard !moves.isEmpty else { break }
+            guard board.perform(moves[rng.next(upperBound: moves.count)]) else { continue }
+            if !game.state.isConsistent { results.inconsistent += 1; break }
+            for layer in cardLayers(in: board) {
+                guard let turn = layer.animation(forKey: "flip") else { continue }
+                results.flips += 1
+                guard let keyframe = turn as? CAKeyframeAnimation,
+                      keyframe.keyPath == "transform",
+                      let middle = (keyframe.values?[(keyframe.values?.count ?? 1) / 2]) as? NSValue,
+                      !CATransform3DIsAffine(middle.caTransform3DValue)
+                else {
+                    results.flatFlips += 1
+                    continue
+                }
+            }
+            if results.flips > 0 { break }
+        }
+
+        // And the lean: a card in the hand is standing in three dimensions,
+        // which an affine matrix cannot express.
+        let placements = board.boardLayout.placements(for: game.state)
+        if let top = placements.last(where: { $0.pile.kind == .tableau && $0.faceUp }) {
+            let start = CGPoint(x: top.frame.midX, y: top.frame.midY)
+            board.mouseDown(with: event(at: start, in: board, window: window, type: .leftMouseDown))
+            for step in 1...4 {
+                let p = CGPoint(x: start.x + CGFloat(step) * 14, y: start.y + CGFloat(step) * 9)
+                board.mouseDragged(with: event(at: p, in: board, window: window, type: .leftMouseDragged))
+            }
+            for layer in cardLayers(in: board) where layer.isHeld {
+                results.held += 1
+                let t = layer.transform
+                if CATransform3DIsAffine(t) || (abs(t.m13) < 0.001 && abs(t.m31) < 0.001) {
+                    results.heldFlat += 1
+                }
+            }
+            board.mouseUp(with: event(at: CGPoint(x: start.x + 56, y: start.y + 36),
+                                      in: board, window: window, type: .leftMouseUp))
+        }
+        if !game.state.isConsistent { results.inconsistent += 1 }
+        return results
+    }
+
+    private static func bitmap(_ image: CGImage?) -> Data? {
+        guard let image else { return nil }
+        return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+    }
+
+    /// The felt only: the board rendered with every card layer hidden, so that
+    /// the comparison is about the table rather than about the deck.
+    private static func tableBitmap(of board: BoardView) -> Data? {
+        guard let layer = board.layer else { return nil }
+        let cards = cardLayers(in: board)
+        let hidden = cards.map(\.isHidden)
+        cards.forEach { $0.isHidden = true }
+        defer { for (card, was) in zip(cards, hidden) { card.isHidden = was } }
+
+        guard let ctx = CGContext(
+            data: nil, width: Int(board.bounds.width), height: Int(board.bounds.height),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        layer.render(in: ctx)
+        return bitmap(ctx.makeImage())
+    }
+
     static func checkControls() -> Int32 {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)

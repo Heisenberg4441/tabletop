@@ -150,6 +150,13 @@ enum MainMenu {
         add(menu, NSLocalizedString("Four-Colour Deck", comment: ""),
             #selector(GameWindowController.toggleFourColorDeck(_:)))
         menu.addItem(.separator())
+        // ⌘⌥A rather than a bare ⌘A: there is no text on the board to select,
+        // but a player who reaches for Select All out of habit and gets a new
+        // table has been surprised by their own muscle memory.
+        add(menu, NSLocalizedString("Apple Mode", comment: "the skeuomorphic one"),
+            #selector(GameWindowController.toggleAppleMode(_:)), "a",
+            modifiers: [.command, .option])
+        menu.addItem(.separator())
         // ⌘B is free — the reserved ones are ⌘H (hide) and ⌘M (minimise).
         add(menu, NSLocalizedString("Brainrot Mode", comment: "the silly one"),
             #selector(GameWindowController.toggleBrainrot(_:)), "b")

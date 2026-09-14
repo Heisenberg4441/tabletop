@@ -283,6 +283,14 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
         }
     }
 
+    /// Apple mode. Display-only, like the card back and the felt, so it takes
+    /// effect on the board in front of the player rather than asking for a new
+    /// deal first.
+    @objc func toggleAppleMode(_ sender: NSMenuItem) {
+        preferences.apple.toggle()
+        applyTheme()
+    }
+
     @objc func toggleFourColorDeck(_ sender: NSMenuItem) {
         preferences.fourColorDeck.toggle()
         applyTheme()
@@ -377,6 +385,8 @@ final class GameWindowController: NSWindowController, NSWindowDelegate, BoardVie
             item.state = preferences.soundEnabled ? .on : .off
         case #selector(toggleFourColorDeck(_:)):
             item.state = preferences.fourColorDeck ? .on : .off
+        case #selector(toggleAppleMode(_:)):
+            item.state = preferences.apple ? .on : .off
         case #selector(toggleBrainrot(_:)):
             item.state = preferences.brainrot ? .on : .off
         case #selector(toggleBrainrotMusic(_:)):

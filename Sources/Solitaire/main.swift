@@ -14,7 +14,7 @@ if arguments.contains("--selftest") {
 }
 if let i = arguments.firstIndex(of: "--preview") {
     let path = i + 1 < arguments.count ? arguments[i + 1] : "deck.png"
-    exit(Preview.renderDeck(to: path))
+    exit(Preview.renderDeck(to: path, apple: arguments.contains("--apple")))
 }
 if let i = arguments.firstIndex(of: "--icon") {
     let path = i + 1 < arguments.count ? arguments[i + 1] : "icon.png"
@@ -32,6 +32,11 @@ if let i = arguments.firstIndex(of: "--shot") {
     if let width = value("--width") { options.width = CGFloat(width) }
     if let height = value("--height") { options.height = CGFloat(height) }
     if let draw = value("--draw") { options.drawCount = draw }
+    if arguments.contains("--apple") { options.theme.apple = true }
+    if let j = arguments.firstIndex(of: "--table"), j + 1 < arguments.count,
+       let colour = TableColor(rawValue: arguments[j + 1]) {
+        options.theme.table = colour
+    }
     exit(Screenshot.render(options))
 }
 if let i = arguments.firstIndex(of: "--playtest") {

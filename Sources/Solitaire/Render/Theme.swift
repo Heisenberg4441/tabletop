@@ -36,6 +36,30 @@ enum TableColor: String, CaseIterable, Codable, Sendable {
                     NSColor(srgbRed: 0.094, green: 0.106, blue: 0.129, alpha: 1))
         }
     }
+
+    /// The same four cloths, dyed for Apple mode.
+    ///
+    /// Deeper and a touch less bright than the flat versions, because that
+    /// mode then lays a weave, a grain and a heavy corner vignette over the
+    /// top of them. Reusing the flat colours there comes out washed out and
+    /// faintly grey: texture only reads as texture when it has somewhere dark
+    /// to read against.
+    var appleGradient: (center: NSColor, edge: NSColor) {
+        switch self {
+        case .green:
+            return (NSColor(srgbRed: 0.157, green: 0.443, blue: 0.290, alpha: 1),
+                    NSColor(srgbRed: 0.020, green: 0.106, blue: 0.071, alpha: 1))
+        case .blue:
+            return (NSColor(srgbRed: 0.118, green: 0.318, blue: 0.502, alpha: 1),
+                    NSColor(srgbRed: 0.016, green: 0.071, blue: 0.145, alpha: 1))
+        case .burgundy:
+            return (NSColor(srgbRed: 0.404, green: 0.133, blue: 0.180, alpha: 1),
+                    NSColor(srgbRed: 0.114, green: 0.024, blue: 0.043, alpha: 1))
+        case .slate:
+            return (NSColor(srgbRed: 0.224, green: 0.247, blue: 0.290, alpha: 1),
+                    NSColor(srgbRed: 0.047, green: 0.055, blue: 0.071, alpha: 1))
+        }
+    }
 }
 
 enum CardBackStyle: String, CaseIterable, Codable, Sendable {
@@ -91,12 +115,26 @@ struct Theme: Equatable {
     /// Four-colour deck: the standard accommodation for players who cannot
     /// tell red from black. Off by default, and worth offering prominently.
     var fourColorDeck: Bool = false
+    /// Apple mode: cloth over a wooden table, printed card stock under a
+    /// varnish, piles pressed into the felt, and cards that turn over edge-on
+    /// in real perspective. Purely a surface treatment — see `AppleStyle`.
+    var apple: Bool = false
 
     // Card face
     let faceColor = NSColor(srgbRed: 0.992, green: 0.992, blue: 0.980, alpha: 1)
     let faceEdge = NSColor(srgbRed: 0.65, green: 0.64, blue: 0.62, alpha: 1)
 
     func color(for suit: Suit) -> NSColor {
+        // Printed ink rather than screen colour: a real deck's red is a warm
+        // vermilion laid on cream stock, and its black is a soft-edged charcoal
+        // that never reaches the value a monitor can. The four-colour deck is
+        // left alone — its whole job is to be told apart at a glance, and
+        // muting it for the sake of the material would be the wrong trade.
+        if apple && !fourColorDeck {
+            return suit.isRed
+                ? NSColor(srgbRed: 0.722, green: 0.106, blue: 0.145, alpha: 1)
+                : NSColor(srgbRed: 0.114, green: 0.110, blue: 0.114, alpha: 1)
+        }
         if fourColorDeck {
             switch suit {
             case .spades: return NSColor(srgbRed: 0.102, green: 0.102, blue: 0.118, alpha: 1)
@@ -118,6 +156,11 @@ struct Theme: Equatable {
     /// Feedback colours.
     let hintColor = NSColor(srgbRed: 1.0, green: 0.843, blue: 0.286, alpha: 1)
     let dropTargetColor = NSColor(white: 1, alpha: 0.85)
+    /// The same outline on the Apple-mode table, where a flat white halo reads
+    /// as a rendering artefact against cloth and wood. Warm light instead, in
+    /// the same family as the hint — all the "look here" feedback in the app
+    /// belongs to one colour.
+    let appleDropTargetColor = NSColor(srgbRed: 1.0, green: 0.898, blue: 0.612, alpha: 0.95)
 
     /// Floating score changes. Both are pale rather than saturated: every table
     /// colour is a dark, fairly saturated field, and a mid-tone green or red
@@ -136,6 +179,6 @@ struct Theme: Equatable {
 
     /// A cache key that changes whenever a drawn card would look different.
     var cardCacheToken: String {
-        "\(backStyle.rawValue)-\(backColor.rawValue)-\(fourColorDeck)"
+        "\(backStyle.rawValue)-\(backColor.rawValue)-\(fourColorDeck)-\(apple)"
     }
 }

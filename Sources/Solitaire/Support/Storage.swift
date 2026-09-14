@@ -53,6 +53,10 @@ struct Preferences: Codable, Equatable {
     var backStyle: CardBackStyle = .lattice
     var backColor: CardBackColor = .navy
     var fourColorDeck: Bool = false
+    /// Apple mode: the skeuomorphic table. Off by default because the flat
+    /// board is the one that stays out of the way, and this one is a choice
+    /// about taste rather than a better default.
+    var apple: Bool = false
     /// Fireballs, fireworks, confetti and captions on every move. Off, and
     /// the only setting in here that exists purely as a joke.
     var brainrot: Bool = false
@@ -86,6 +90,7 @@ struct Preferences: Codable, Equatable {
         backStyle = try c.decodeIfPresent(CardBackStyle.self, forKey: .backStyle) ?? .lattice
         backColor = try c.decodeIfPresent(CardBackColor.self, forKey: .backColor) ?? .navy
         fourColorDeck = try c.decodeIfPresent(Bool.self, forKey: .fourColorDeck) ?? false
+        apple = try c.decodeIfPresent(Bool.self, forKey: .apple) ?? false
         brainrot = try c.decodeIfPresent(Bool.self, forKey: .brainrot) ?? false
         brainrotMusic = try c.decodeIfPresent(Bool.self, forKey: .brainrotMusic) ?? false
         windowFrame = try c.decodeIfPresent(String.self, forKey: .windowFrame)
@@ -105,6 +110,7 @@ struct Preferences: Codable, Equatable {
         theme.backStyle = backStyle
         theme.backColor = backColor
         theme.fourColorDeck = fourColorDeck
+        theme.apple = apple
         return theme
     }
 
