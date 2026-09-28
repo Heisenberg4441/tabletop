@@ -105,7 +105,7 @@ struct BlackjackShoe: Codable, Equatable {
     }
 
     private func mixedSeed(salt: UInt64) -> UInt64 {
-        (seed ^ salt) &+ UInt64(shuffles) &* 0x9E37_79B9_7F4A_7C15
+        (seed ^ salt) &+ UInt64(truncatingIfNeeded: shuffles) &* 0x9E37_79B9_7F4A_7C15
     }
 
     /// Whether the shoe, the tray and `table` hold every card exactly once.
@@ -124,8 +124,10 @@ struct BlackjackShoe: Codable, Equatable {
 
     /// Moves one undealt copy of each of `cards` to the top of the shoe, the
     /// first of them to be dealt first. For screenshots and tests, which need
-    /// a particular hand; false (and the shoe unchanged) if the shoe has run
-    /// out of one of them.
+    /// a particular hand. A shoe well into its run may have dealt every copy
+    /// of one of them; then the same rank in another suit stands in, or any
+    /// card that counts the same — the hand plays identically. False (and
+    /// the shoe unchanged) only if there is none of those either.
     @discardableResult
     mutating func stack(_ cards: [Card]) -> Bool {
         var remaining = undealt
@@ -133,7 +135,10 @@ struct BlackjackShoe: Codable, Equatable {
         for card in cards {
             // Take the copy nearest the top, so the rest of the shoe keeps
             // its order.
-            guard let index = remaining.lastIndex(where: { $0 % 52 == Int(card.code) }) else { return false }
+            let points = min(10, card.value)
+            guard let index = remaining.lastIndex(where: { $0 % 52 == Int(card.code) })
+                ?? remaining.lastIndex(where: { BlackjackCard(id: $0).card.rank == card.rank })
+                ?? remaining.lastIndex(where: { BlackjackCard(id: $0).points == points }) else { return false }
             picked.append(remaining.remove(at: index))
         }
         undealt = remaining + picked.reversed()
@@ -155,9 +160,10 @@ struct BlackjackShoe: Codable, Equatable {
         self.decks = BlackjackRules.deckChoices.contains(decks) ? decks : 6
         undealt = value(.undealt, [])
         discard = value(.discard, [])
-        cutRemaining = value(.cutRemaining, 0)
+        // The cut card somewhere in the shoe, and a count that only goes up.
+        cutRemaining = max(1, min(self.decks * 52 - 1, value(.cutRemaining, self.decks * 13)))
         isCutCardOut = value(.isCutCardOut, false)
-        shuffles = value(.shuffles, 0)
+        shuffles = max(0, value(.shuffles, 0))
         seed = value(.seed, 0x5E_ED)
         let penetration = value(.penetration, 0.75)
         self.penetration = (0.5...0.9).contains(penetration) ? penetration : 0.75

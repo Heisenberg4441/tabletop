@@ -8,13 +8,18 @@
 //  well-known adjustments for the rules the New Game card can change:
 //
 //    * H17 (the dealer hits soft 17): double 11 against an ace, double soft
-//      19 against a six and soft 18 against a two; surrender 15 and 17 and a
-//      pair of eights against an ace.
-//    * One or two decks: double 11 against an ace, 9 against a two, soft 17
-//      against a two and soft 13 and 14 against a four; one deck also
-//      doubles 8 against a five or six. Surrender only 16 against a ten or
-//      ace (and 15 against a ten).
+//      19 against a six and soft 18 against a two; surrender 15 and 17
+//      against an ace, and (four or more decks) a pair of eights too.
+//    * One or two decks: double 11 against an ace and 9 against a two;
+//      surrender 16 only against a ten or an ace (and 15 against a ten).
+//    * One deck only: double 8 against a five or six, soft 17 against a two,
+//      soft 13 and 14 against a four, soft 19 against a six; stand on soft 18
+//      against an ace when the dealer stands on soft 17.
 //    * No double after split: the small pairs split against fewer cards.
+//
+//  The one- and two-deck cells were checked against a composition-dependent
+//  expectation for the two-card hand; where two plays are within a
+//  thousandth of a bet of each other, the published chart's play is kept.
 //
 //  Insurance is never basic strategy, and neither is even money: the coach
 //  says so when asked.
@@ -44,16 +49,19 @@ enum BlackjackStrategy {
 
         // Surrender first: it is the one play that only exists as the first.
         if legal.contains(.surrender) && !total.isSoft {
-            let eights = hand.isPair && points[0] == 8
+            // Eights are split rather than surrendered — when they can be.
+            // Eights that cannot (the bankroll will not cover a second bet)
+            // are a plain hard 16.
+            let eights = hand.isPair && points[0] == 8 && legal.contains(.split)
             var give = false
             if eights {
                 give = h17 && multi && up == 11
             } else if total.total == 16 {
                 give = up == 10 || up == 11 || (multi && up == 9)
             } else if total.total == 15 {
-                give = up == 10 || (h17 && multi && up == 11)
+                give = up == 10 || (h17 && up == 11)
             } else if total.total == 17 {
-                give = h17 && multi && up == 11
+                give = h17 && up == 11
             }
             if give { return .surrender }
         }
@@ -86,14 +94,15 @@ enum BlackjackStrategy {
             case 18:
                 if (3...6).contains(up) || (up == 2 && h17) { return pick(.double, else: .stand) }
                 if up == 2 || up == 7 || up == 8 { return .stand }
+                if up == 11 && decks == 1 && !h17 { return .stand }
                 return pick(.hit, else: .stand)
             case 17:
-                if (3...6).contains(up) || (up == 2 && decks <= 2) { return pick(.double, else: .hit) }
+                if (3...6).contains(up) || (up == 2 && decks == 1) { return pick(.double, else: .hit) }
                 return pick(.hit, else: .stand)
             case 15, 16:
                 return (4...6).contains(up) ? pick(.double, else: .hit) : pick(.hit, else: .stand)
             case 13, 14:
-                if (5...6).contains(up) || (up == 4 && decks <= 2) { return pick(.double, else: .hit) }
+                if (5...6).contains(up) || (up == 4 && decks == 1) { return pick(.double, else: .hit) }
                 return pick(.hit, else: .stand)
             default:
                 return pick(.hit, else: .stand)                                    // soft 12: two aces

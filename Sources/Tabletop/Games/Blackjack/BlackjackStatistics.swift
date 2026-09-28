@@ -21,17 +21,17 @@ struct BlackjackStatistics: Codable, Equatable {
     var pushes = 0
     var blackjacks = 0
     /// The best single round, net.
-    var biggestWin = 0
-    var peakBankroll = BlackjackRules.startingBankroll
+    var biggestWin = BlackjackAmount.zero
+    var peakBankroll = BlackjackAmount(BlackjackRules.startingBankroll)
     /// Everything won less everything lost.
-    var net = 0
+    var net = BlackjackAmount.zero
 
     static let fileName = Storage.fileName("stats.json", for: .blackjack)
 
     init() {}
 
     /// Counts a settled round.
-    mutating func record(_ round: BlackjackRound, bankroll: Int) {
+    mutating func record(_ round: BlackjackRound, bankroll: BlackjackAmount) {
         guard round.phase == .settled else { return }
         rounds += 1
         for hand in round.hands {
@@ -48,7 +48,7 @@ struct BlackjackStatistics: Codable, Equatable {
     }
 
     /// A round walked away from counts every unsettled hand as lost.
-    mutating func recordForfeit(hands count: Int, staked: Int) {
+    mutating func recordForfeit(hands count: Int, staked: BlackjackAmount) {
         guard count > 0 else { return }
         rounds += 1
         hands += count
@@ -62,18 +62,25 @@ struct BlackjackStatistics: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        func value(_ key: CodingKeys, _ fallback: Int) -> Int {
-            max(0, ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? fallback)
+        // Counts a lifetime could reach and no more, so a damaged file can
+        // never make the next `+= 1` overflow.
+        let most = 1_000_000_000_000
+        func count(_ key: CodingKeys) -> Int {
+            max(0, min(most, ((try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0))
         }
-        rounds = value(.rounds, 0)
-        hands = value(.hands, 0)
-        wins = value(.wins, 0)
-        losses = value(.losses, 0)
-        pushes = value(.pushes, 0)
-        blackjacks = value(.blackjacks, 0)
-        biggestWin = value(.biggestWin, 0)
-        peakBankroll = value(.peakBankroll, BlackjackRules.startingBankroll)
-        net = ((try? c.decodeIfPresent(Int.self, forKey: .net)) ?? nil) ?? 0
+        func amount(_ key: CodingKeys, _ fallback: BlackjackAmount, from low: BlackjackAmount) -> BlackjackAmount {
+            (((try? c.decodeIfPresent(BlackjackAmount.self, forKey: key)) ?? nil) ?? fallback)
+                .clamped(to: low...BlackjackAmount(most))
+        }
+        rounds = count(.rounds)
+        hands = count(.hands)
+        wins = count(.wins)
+        losses = count(.losses)
+        pushes = count(.pushes)
+        blackjacks = count(.blackjacks)
+        biggestWin = amount(.biggestWin, .zero, from: .zero)
+        peakBankroll = amount(.peakBankroll, BlackjackAmount(BlackjackRules.startingBankroll), from: .zero)
+        net = amount(.net, .zero, from: -BlackjackAmount(most))
     }
 
     static func load() -> BlackjackStatistics {
@@ -128,9 +135,9 @@ struct BlackjackStatistics: Codable, Equatable {
             (NSLocalizedString("Pushed", comment: "blackjack statistics"), "\(Chips.format(s.pushes))  \(percent(s.pushes))"),
             (NSLocalizedString("Blackjacks", comment: "blackjack statistics"), Chips.format(s.blackjacks)),
             (NSLocalizedString("Biggest win", comment: "blackjack statistics"),
-             s.biggestWin > 0 ? Chips.formatChange(s.biggestWin) : "—"),
-            (NSLocalizedString("Peak bankroll", comment: "blackjack statistics"), Chips.format(s.peakBankroll)),
-            (NSLocalizedString("Net", comment: "blackjack statistics: total won less lost"), Chips.formatChange(s.net)),
+             s.biggestWin > .zero ? s.biggestWin.formattedChange : "—"),
+            (NSLocalizedString("Peak bankroll", comment: "blackjack statistics"), s.peakBankroll.formatted),
+            (NSLocalizedString("Net", comment: "blackjack statistics: total won less lost"), s.net.formattedChange),
         ]
         let grid = NSGridView(numberOfColumns: 2, rows: 0)
         grid.translatesAutoresizingMaskIntoConstraints = false
@@ -180,7 +187,7 @@ struct BlackjackSavedTable: Codable {
         // Without a table there is nothing to restore; the caller starts afresh.
         engine = try c.decode(BlackjackEngine.self, forKey: .engine)
         coach = ((try? c.decodeIfPresent(BlackjackCoachLevel.self, forKey: .coach)) ?? nil) ?? .hints
-        shoesStarted = ((try? c.decodeIfPresent(Int.self, forKey: .shoesStarted)) ?? nil) ?? 1
+        shoesStarted = max(1, min(1_000_000_000, ((try? c.decodeIfPresent(Int.self, forKey: .shoesStarted)) ?? nil) ?? 1))
     }
 
     static func load() -> BlackjackSavedTable? {

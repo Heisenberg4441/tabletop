@@ -86,8 +86,9 @@ struct BlackjackHand: Codable, Equatable {
     /// Set when the round settles.
     var result: BlackjackResult?
     /// Chips handed back when it settled, the stake included — twice the
-    /// bet for a win, the bet for a push, nothing for a loss.
-    var returned = 0
+    /// bet for a win, two and a half times it for a natural, the bet for a
+    /// push, half of it for a surrender, nothing for a loss.
+    var returned = BlackjackAmount.zero
 
     init(bet: Int) {
         self.bet = bet
@@ -117,7 +118,9 @@ struct BlackjackHand: Codable, Equatable {
             ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
         }
         cards = value(.cards, [])
-        bet = max(0, value(.bet, 0))
+        // Bounded far above any table, so no sum over a damaged file can
+        // overflow; `isPlausible` then holds it to the table's own limit.
+        bet = max(0, min(Self.largestBet, value(.bet, 0)))
         isDoubled = value(.isDoubled, false)
         isFromSplit = value(.isFromSplit, false)
         isSplitAces = value(.isSplitAces, false)
@@ -125,8 +128,10 @@ struct BlackjackHand: Codable, Equatable {
         tookEvenMoney = value(.tookEvenMoney, false)
         isDone = value(.isDone, false)
         result = value(.result, nil as BlackjackResult?)
-        returned = max(0, value(.returned, 0))
+        returned = value(.returned, BlackjackAmount.zero).clamped(to: .zero...BlackjackAmount(Self.largestBet * 3))
     }
+
+    static let largestBet = 10_000_000
 }
 
 struct BlackjackRound: Codable, Equatable {
@@ -138,11 +143,11 @@ struct BlackjackRound: Codable, Equatable {
     /// The dealer's cards: the up-card first, the hole card second.
     var dealer: [BlackjackCard] = []
     var isHoleRevealed = false
-    /// The insurance bet, if one was taken.
-    var insurance = 0
+    /// The insurance bet, if one was taken: half the bet, to the half chip.
+    var insurance = BlackjackAmount.zero
     /// What the insurance paid back once the dealer had looked — nil while
     /// it is still riding (or was never taken).
-    var insuranceReturned: Int?
+    var insuranceReturned: BlackjackAmount?
     /// The bet the round was dealt with, before any doubles and splits.
     var initialBet: Int
 
@@ -159,18 +164,18 @@ struct BlackjackRound: Codable, Equatable {
     var cardsOnTable: [BlackjackCard] { dealer + hands.flatMap(\.cards) }
 
     /// Chips staked and not yet settled.
-    var chipsAtRisk: Int {
-        hands.filter { !$0.isSettled }.reduce(0) { $0 + $1.bet } + (insuranceReturned == nil ? insurance : 0)
+    var chipsAtRisk: BlackjackAmount {
+        BlackjackAmount(hands.filter { !$0.isSettled }.reduce(0) { $0 + $1.bet }) + (insuranceReturned == nil ? insurance : .zero)
     }
 
     /// Everything staked this round: the bets as they stand, and insurance.
-    var totalStaked: Int { hands.reduce(0) { $0 + $1.bet } + insurance }
+    var totalStaked: BlackjackAmount { BlackjackAmount(hands.reduce(0) { $0 + $1.bet }) + insurance }
 
     /// Everything handed back, once settled.
-    var totalReturned: Int { hands.reduce(0) { $0 + $1.returned } + (insuranceReturned ?? 0) }
+    var totalReturned: BlackjackAmount { hands.reduce(.zero) { $0 + $1.returned } + (insuranceReturned ?? .zero) }
 
     /// The round's result for the player, once settled.
-    var net: Int { totalReturned - totalStaked }
+    var net: BlackjackAmount { totalReturned - totalStaked }
 
     private enum CodingKeys: String, CodingKey {
         case phase, hands, active, dealer, isHoleRevealed, insurance, insuranceReturned, initialBet
@@ -186,17 +191,22 @@ struct BlackjackRound: Codable, Equatable {
         active = value(.active, 0)
         dealer = value(.dealer, [])
         isHoleRevealed = value(.isHoleRevealed, false)
-        insurance = max(0, value(.insurance, 0))
-        insuranceReturned = value(.insuranceReturned, nil as Int?)
-        initialBet = value(.initialBet, hands.first?.bet ?? 0)
+        insurance = value(.insurance, BlackjackAmount.zero).clamped(to: .zero...BlackjackAmount(BlackjackHand.largestBet))
+        insuranceReturned = value(.insuranceReturned, nil as BlackjackAmount?)
+            .map { $0.clamped(to: .zero...BlackjackAmount(BlackjackHand.largestBet * 2)) }
+        initialBet = max(0, min(BlackjackHand.largestBet, value(.initialBet, hands.first?.bet ?? 0)))
     }
 
-    /// Whether the round could have come out of the engine: the right number
-    /// of cards for its phase, a hand to play when it is the player's turn.
-    /// A saved round that fails this is refunded rather than resumed.
-    var isPlausible: Bool {
+    /// Whether the round could have come out of the engine at a table whose
+    /// limit is `maximumBet`: bets within it, the right number of cards for
+    /// its phase, a hand to play when it is the player's turn. A saved round
+    /// that fails this is refunded rather than resumed.
+    func isPlausible(maximumBet: Int) -> Bool {
         guard !hands.isEmpty, hands.count <= 4, dealer.count <= 12, active >= 0, active < hands.count else { return false }
-        if hands.contains(where: { $0.bet <= 0 || $0.cards.count > 12 }) { return false }
+        guard initialBet > 0, initialBet <= maximumBet, insurance <= BlackjackAmount(initialBet).half else { return false }
+        // A hand's bet is the opening bet, or twice it once doubled.
+        if hands.contains(where: { $0.bet != initialBet * ($0.isDoubled ? 2 : 1) || $0.cards.count > 12 }) { return false }
+        if let returned = insuranceReturned, returned != .zero && returned != insurance * 3 { return false }
         switch phase {
         case .betting: return false
         case .dealing: return hands.count == 1 && hands[0].cards.count + dealer.count < 4

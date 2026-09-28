@@ -57,7 +57,7 @@ enum BlackjackTests {
     /// card, the dealer's up-card, the player's second, the hole card, then
     /// whatever the round draws.
     static func table(_ codes: String, rules: BlackjackRules = BlackjackRules(), bet: Int = 100,
-                      bankroll: Int = 1_000) -> BlackjackEngine {
+                      bankroll: BlackjackAmount = 1_000) -> BlackjackEngine {
         var engine = BlackjackEngine(rules: rules, seed: 42, bankroll: bankroll)
         engine.stackShoe(cards(codes))
         engine.addToBet(bet)
@@ -134,9 +134,32 @@ enum BlackjackTests {
                 && natural.round?.hands[0].returned == 250 && natural.bankroll == 1_150)
         t.check("a natural is settled without a decision", natural.phase == .settled)
         t.check("and the hole card is shown", natural.round?.isHoleRevealed == true)
+        // Exactly three to two, to the half chip: nothing rounds the house's way.
         var odd = table("As 9d Kh 8c", bet: 15)
         runDealer(&odd)
-        t.check("an odd bet's half chip rounds down (15 → 22 won)", odd.round?.hands[0].returned == 15 + 22)
+        t.check("a natural on 15 wins 22.5", odd.round?.hands[0].returned == 37.5 && odd.bankroll == 1_022.5)
+        var quarter = table("As 9d Kh 8c", bet: 25)
+        runDealer(&quarter)
+        t.check("a natural on 25 wins 37.5 and says 'Blackjack +37.5'", quarter.round?.hands[0].returned == 62.5
+                && BlackjackScene(engine: quarter).hands.first?.label == "Blackjack +" + BlackjackAmount(37.5).formatted
+                && quarter.isBalanced)
+        var giveQuarter = table("Tc Td 6h 7c", bet: 25)
+        runDealer(&giveQuarter)
+        giveQuarter.perform(.surrender)
+        runDealer(&giveQuarter)
+        t.check("surrendering 25 hands back 12.5, exactly half", giveQuarter.round?.hands[0].returned == 12.5
+                && giveQuarter.bankroll == 987.5 && giveQuarter.isBalanced)
+        var insureQuarter = table("Tc Ad 9h Kc", bet: 25)
+        t.check("insurance on 25 costs 12.5", insureQuarter.insuranceCost == 12.5)
+        insureQuarter.decideInsurance(take: true)
+        runDealer(&insureQuarter)
+        t.check("and pays 37.5 back against a blackjack (net 0)", insureQuarter.round?.insuranceReturned == 37.5
+                && insureQuarter.bankroll == 1_000 && insureQuarter.isBalanced)
+        t.check("half chips read '37.5', '+12.5', '\u{2212}12.5' and whole ones as before",
+                BlackjackAmount(37.5).formatted.hasPrefix("37") && BlackjackAmount(37.5).formatted.hasSuffix("5")
+                    && BlackjackAmount(37.5).formatted.count == 4 && BlackjackAmount(12.5).formattedChange.hasPrefix("+")
+                    && (-BlackjackAmount(12.5)).formattedChange.hasPrefix("\u{2212}")
+                    && BlackjackAmount(1_250).formatted == Chips.format(1_250))
 
         // Win, lose, push.
         var win = table("Tc 7d 9h Tc")
@@ -453,6 +476,25 @@ enum BlackjackTests {
         t.check("11 vs A → double with one deck", advice("6c 5d", "Ah", { var r = rules; r.decks = 1; return r }()) == .double)
         t.check("15 vs A → surrender at H17 only", advice("Tc 5d", "Ah") == .hit
                 && advice("Tc 5d", "Ah", { var r = rules; r.dealerHitsSoft17 = true; return r }()) == .surrender)
+        // Eights that cannot be split (no chips for a second bet) are a hard 16.
+        let noSplit: Set<BlackjackAction> = [.hit, .stand, .surrender]
+        t.check("unsplittable 88 vs 10 → surrender, like 16", advice("8c 8d", "Th", legal: noSplit) == .surrender
+                && advice("8c 8d", "9h", legal: noSplit) == .surrender && advice("8c 8d", "Ah", legal: noSplit) == .surrender)
+        t.check("unsplittable 88 vs 9 at H17 → surrender, vs 7 → hit",
+                advice("8c 8d", "9h", { var r = rules; r.dealerHitsSoft17 = true; return r }(), legal: noSplit) == .surrender
+                    && advice("8c 8d", "7h", legal: noSplit) == .hit)
+        let one = { () -> BlackjackRules in var r = rules; r.decks = 1; return r }()
+        let two = { () -> BlackjackRules in var r = rules; r.decks = 2; return r }()
+        let oneH17 = { () -> BlackjackRules in var r = one; r.dealerHitsSoft17 = true; return r }()
+        let twoH17 = { () -> BlackjackRules in var r = two; r.dealerHitsSoft17 = true; return r }()
+        t.check("2D S17: A2 and A3 vs 4 hit, A6 vs 2 hits", advice("Ac 2d", "4h", two) == .hit
+                && advice("Ac 3d", "4h", two) == .hit && advice("Ac 6d", "2h", two) == .hit)
+        t.check("1D S17: A2 and A3 vs 4 double, A6 vs 2 doubles", advice("Ac 2d", "4h", one) == .double
+                && advice("Ac 3d", "4h", one) == .double && advice("Ac 6d", "2h", one) == .double)
+        t.check("A7 vs A: stands at 1D S17, hits at 1D H17 and 2D", advice("Ac 7d", "Ah", one) == .stand
+                && advice("Ac 7d", "Ah", oneH17) == .hit && advice("Ac 7d", "Ah", two) == .hit)
+        t.check("H17 with one or two decks surrenders 15 and 17 against an ace",
+                [oneH17, twoH17].allSatisfy { advice("Tc 5d", "Ah", $0) == .surrender && advice("Tc 7d", "Ah", $0) == .surrender })
         t.check("22 vs 3 → split with DAS, hit without", advice("2c 2d", "3h") == .split
                 && advice("2c 2d", "3h", { var r = rules; r.doubleAfterSplit = false; return r }()) == .hit)
         t.check("a three-card 16 vs 10 hits", advice("Tc 4d 2h", "Th", legal: [.hit, .stand]) == .hit)
@@ -488,6 +530,48 @@ enum BlackjackTests {
                 && odd?.engine.lastBet == 50 && odd?.coach == .hints)
         t.check("an impossible round is dropped and the table balances", odd?.engine.round == nil
                 && odd?.engine.isBalanced == true && odd?.engine.isComposed == true)
+
+        // A table saved with a half chip in it reads back to the half.
+        var halves = table("As 9d Kh 8c", bet: 25)
+        runDealer(&halves)
+        let halvesData = (try? JSONEncoder().encode(halves)) ?? Data()
+        t.check("a bankroll of 1,037.5 is saved and restored to the half chip",
+                (try? JSONDecoder().decode(BlackjackEngine.self, from: halvesData)) == halves
+                    && String(decoding: halvesData, as: UTF8.self).contains("1037.5"))
+
+        // Numbers no table could reach are held to ones it could, so a
+        // damaged file can neither overflow a sum nor wedge the table.
+        func damaged(_ edit: (String) -> String) -> BlackjackEngine? {
+            var engine = table("8c 6d 8h Tc 3s")
+            engine.perform(.stand)
+            let text = String(decoding: (try? JSONEncoder().encode(engine)) ?? Data(), as: UTF8.self)
+            return try? JSONDecoder().decode(BlackjackEngine.self, from: Data(edit(text).utf8))
+        }
+        func replacing(_ key: String, with value: String) -> (String) -> String {
+            { text in
+                guard let range = text.range(of: "\"\(key)\":") else { return text }
+                let rest = text[range.upperBound...]
+                let end = rest.firstIndex(where: { $0 == "," || $0 == "}" }) ?? rest.endIndex
+                return text.replacingCharacters(in: range.upperBound..<end, with: value)
+            }
+        }
+        let rich = damaged(replacing("bankroll", with: "9223372036854775807"))
+        let bigBet = damaged(replacing("bet", with: "9223372036854775000"))
+        let wedged = damaged(replacing("minimumBet", with: "5000"))
+        var backwards = damaged(replacing("shuffles", with: "-7"))
+        t.check("a bankroll near Int.max is held to the table's range and balances",
+                rich.map { $0.bankroll <= BlackjackAmount(BlackjackEngine.largestAmount) && $0.isBalanced } == true)
+        t.check("a bet past the table limit drops the round, refunding what the books say was bet",
+                bigBet.map { $0.round == nil && $0.bankroll == 1_000 && $0.isBalanced } == true)
+        t.check("a minimum bet of 5,000 is held to one a new bankroll can meet",
+                wedged.map { $0.rules.minimumBet <= 100 && $0.rules.maximumBet >= $0.rules.minimumBet } == true)
+        backwards?.collect()
+        let reshuffled = backwards.map { shoe -> Bool in
+            var shoe = shoe.shoe
+            shoe.shuffle()
+            return shoe.shuffles >= 1 && shoe.isComposed(withTable: [])
+        }
+        t.check("a negative shuffle count is read as none, and the shoe shuffles", reshuffled == true)
 
         // A shoe that lost a card is replaced and the round refunded.
         var broken = engine
@@ -532,7 +616,7 @@ enum BlackjackTests {
                 engine.startShoe(rules: rules, seed: UInt64(n) &+ 1)
             }
             if engine.isBroke { engine.resetBankroll() }
-            let most = min(rules.maximumBet, engine.bankroll) / 5
+            let most = min(rules.maximumBet, engine.bankroll.wholeChips) / 5
             let bet = max(2, 2 + rng.next(upperBound: max(1, most - 1))) * 5
             guard engine.addToBet(min(bet, engine.betHeadroom)), engine.deal() else {
                 stuck = true
@@ -559,7 +643,7 @@ enum BlackjackTests {
                     engine.perform(pick)
                 }
                 balanced = balanced && engine.isBalanced
-                plausible = plausible && (engine.round?.isPlausible ?? true)
+                plausible = plausible && (engine.round?.isPlausible(maximumBet: engine.rules.maximumBet) ?? true)
             }
             if steps >= 200 { stuck = true }
             if stuck { break }
@@ -584,9 +668,12 @@ enum BlackjackTests {
                     && splitsToFour > 0 && insured > 0)
         t.info(String(format: "fuzz took %.2f s", seconds))
 
-        // Basic strategy's return should land near the textbook −0.5%.
+        // Basic strategy's return should land near the textbook −0.4% for
+        // these rules: within two standard errors of it over this many
+        // rounds, close enough that a natural paid at even money (about
+        // −2.3%) would fail.
         var strategist = BlackjackEngine(rules: BlackjackRules(), seed: 2_024, bankroll: 10_000_000)
-        var wagered = 0
+        var wagered = BlackjackAmount.zero
         for _ in 0..<20_000 {
             strategist.addToBet(100)
             strategist.deal()
@@ -605,8 +692,8 @@ enum BlackjackTests {
             wagered += strategist.round?.totalStaked ?? 0
             strategist.collect()
         }
-        let edge = Double(strategist.bankroll - 10_000_000) / Double(max(1, wagered)) * 100
-        t.check(String(format: "basic strategy returns %.2f%% over 20,000 rounds (textbook ≈ −0.5%%)", edge),
-                edge > -4 && edge < 3)
+        let edge = (strategist.bankroll - 10_000_000).chips / max(1, wagered.chips) * 100
+        t.check(String(format: "basic strategy returns %.2f%% over 20,000 rounds (textbook ≈ −0.4%%)", edge),
+                edge > -2.0 && edge < 1.2)
     }
 }

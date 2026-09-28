@@ -102,7 +102,7 @@ enum BlackjackPlayTest {
                 game.deal()
             } else {
                 let amount = [10, 25, 50, 100, 150, 200, 300][rng.next(upperBound: 7)]
-                for chip in BlackjackGame.chips(for: min(amount, (game.engine.bankroll / 5) * 5)) { game.pickChip(chip) }
+                for chip in BlackjackGame.chips(for: min(amount, (game.engine.bankroll.wholeChips / 5) * 5)) { game.pickChip(chip) }
                 verify("after betting")
                 if n % 7 == 0, let key = keyEvent("\r", window: window) {
                     table.keyDown(with: key)
@@ -113,8 +113,11 @@ enum BlackjackPlayTest {
             }
             if game.engine.shoe.discard.isEmpty && n > 0 { shuffles += 1 }
             verify("after the deal")
+            // A round that leaves the player broke is cleared at once (the
+            // scheduler runs at once here), so it ends in `betting`.
+            func over() -> Bool { game.engine.phase == .settled || game.engine.phase == .betting }
             var steps = 0
-            while game.engine.phase != .settled && steps < 60 {
+            while !over() && steps < 60 {
                 steps += 1
                 switch game.engine.phase {
                 case .insurance:
@@ -136,13 +139,13 @@ enum BlackjackPlayTest {
                 }
                 verify("in play")
             }
-            if game.engine.phase != .settled { problems.append("round \(n) stuck in \(game.engine.phase)") }
+            if !over() { problems.append("round \(n) stuck in \(game.engine.phase)") }
             rounds += 1
             verify("settled")
             // The payout's beat has passed (the scheduler runs at once here):
             // the winnings are back with the player, and the pill says so.
             let pill = TopBarStatus.items(for: .blackjack).first { $0.id == "bankroll" }?.text ?? ""
-            if game.currentScene.chipsOnCloth != 0 || !pill.contains(Chips.format(game.engine.bankroll)) {
+            if game.currentScene.chipsOnCloth != .zero || !pill.contains(game.engine.bankroll.formatted) {
                 collectedOK = false
                 problems.append("round \(n): \(game.currentScene.chipsOnCloth) left on the cloth, pill '\(pill)'")
             }
@@ -190,9 +193,208 @@ enum BlackjackPlayTest {
         t.check("the books still balance", game.engine.isBalanced)
         game.gameWillResignActive()
         t.check("nothing is left scheduled once the round is over and the game is away", table.scheduler.pendingCount == 0)
+        game.gameDidBecomeActive()
+
+        modals(game, t)
+        outOfChips(game, t, window: window)
+        halfChips(game, t)
+        layout(game, t, window: window)
+
+        game.gameWillResignActive()
         window.contentView = nil
         Storage.remove(BlackjackSavedTable.fileName)
         Storage.remove(BlackjackStatistics.fileName)
+    }
+
+    // MARK: Questions over the table
+
+    /// The New Game card is modal: the Blackjack menu's shortcuts wait for
+    /// it like the bar's buttons do — ⌘↩ under the card must not deal a
+    /// round that Start would then forfeit.
+    private static func modals(_ game: BlackjackGame, _ t: TestReporter) {
+        let table = game.table
+        if game.engine.isBroke { game.resetBankroll() }
+        if game.engine.phase == .settled { game.pickChip(25) } else if game.engine.pendingBet == 0 { game.pickChip(25) }
+        let menu = game.makeGameMenu()
+        func enabled(_ action: Selector) -> Bool {
+            guard let item = menu.items.first(where: { $0.action == action }) else { return false }
+            return game.validateMenuItem(item)
+        }
+        let before = (game.engine.phase, game.engine.bankroll, game.engine.pendingBet)
+        t.check("between rounds Deal and Reset Bankroll are on the menu",
+                enabled(#selector(BlackjackGame.dealFromMenu(_:))) && enabled(#selector(BlackjackGame.resetBankrollFromMenu(_:))))
+        game.newGame(nil)
+        let card = OptionsCard.presentedCards.first { $0.isDescendant(of: table) }
+        t.check("New Game puts up the rules card", card != nil)
+        t.check("under it Deal, Rebet, Clear Bet, Reset Bankroll and Show Hint are off the menu",
+                !enabled(#selector(BlackjackGame.dealFromMenu(_:))) && !enabled(#selector(BlackjackGame.rebetFromMenu(_:)))
+                    && !enabled(#selector(BlackjackGame.clearBetFromMenu(_:)))
+                    && !enabled(#selector(BlackjackGame.resetBankrollFromMenu(_:))) && !enabled(#selector(BlackjackGame.showHint(_:))))
+        game.dealFromMenu(nil)
+        game.rebetFromMenu(nil)
+        game.clearBetFromMenu(nil)
+        game.resetBankrollFromMenu(nil)
+        game.pickChip(100)
+        t.check("and a shortcut sent anyway changes nothing on the table",
+                (game.engine.phase, game.engine.bankroll, game.engine.pendingBet) == before && Banner.banners(in: table).isEmpty)
+        card?.dismiss(animated: false)
+
+        // The reset confirmation holds the table too.
+        game.resetBankrollFromMenu(nil)
+        t.check("Reset Bankroll… asks first, and Deal waits for the answer",
+                Banner.banners(in: table).count == 1 && !enabled(#selector(BlackjackGame.dealFromMenu(_:)))
+                    && table.bar.button(for: "deal")?.isEnabled == false)
+        game.dealFromMenu(nil)
+        t.check("(⌘↩ does not deal under it)", game.engine.phase == before.0)
+        game.newGame(nil)
+        t.check("New Game takes the confirmation away and asks its own question",
+                Banner.banners(in: table).isEmpty && OptionsCard.presentedCards.contains { $0.isDescendant(of: table) })
+        OptionsCard.presentedCards.first { $0.isDescendant(of: table) }?.dismiss(animated: false)
+        game.refreshForTesting()
+        t.check("and with it gone, the table is the player's again", enabled(#selector(BlackjackGame.dealFromMenu(_:))))
+
+        // A hand being dealt when the card goes up waits for it: nothing
+        // is dealt, and no question comes up, until the card is put away.
+        table.scheduler.isImmediate = false
+        game.clearBet()
+        game.stackShoeForTesting(BlackjackTests.cards("Tc Ad 9h 7c"))
+        game.pickChip(100)
+        game.deal()
+        game.newGame(nil)
+        game.runDealerForTesting()
+        t.check("under the New Game card the dealer's hands stop", game.engine.round?.cardsOnTable.isEmpty == true
+                && table.scheduler.pendingCount == 0 && !game.isAskingInsurance)
+        OptionsCard.presentedCards.first { $0.isDescendant(of: table) }?.cancelOperation(nil)
+        game.runDealerForTesting()
+        t.check("and Cancel lets the deal carry on, to the insurance question", game.engine.phase == .insurance
+                && game.isAskingInsurance)
+        game.decideInsurance(take: false)
+        game.runDealerForTesting()
+        table.scheduler.isImmediate = true
+        while game.engine.phase != .settled {
+            if let advice = game.recommendation { game.play(advice) } else { game.runDealerForTesting() }
+        }
+        game.runDealerForTesting()
+    }
+
+    /// Losing the last chips: the hand is seen, then cleared, and only then
+    /// comes the offer of a new bankroll — never stacked on another question.
+    private static func outOfChips(_ game: BlackjackGame, _ t: TestReporter, window: NSWindow) {
+        let table = game.table
+        game.resetBankroll()
+        game.clearBet()
+        // (Suits the arranged rounds before have not used up.)
+        game.stackShoeForTesting(BlackjackTests.cards("Js 9s 6s Qs"))
+        for chip in BlackjackGame.chips(for: 1_000) { game.pickChip(chip) }
+        game.deal()
+        game.runDealerForTesting()
+        game.play(.stand)
+        game.runDealerForTesting()
+        t.check("a round that takes the last chip is cleared off the table", game.engine.bankroll == .zero
+                && game.engine.phase == .betting && table.sceneSpriteCount == 0)
+        t.check("and then the table offers a new bankroll", Banner.banners(in: table).count == 1
+                && table.rack.isEnabled == false && table.bar.button(for: "deal")?.isEnabled == false)
+        game.resetBankrollFromMenu(nil)
+        t.check("Reset Bankroll… answers that offer rather than asking again",
+                Banner.banners(in: table).isEmpty && game.engine.bankroll == 1_000 && game.engine.isBalanced)
+
+        // A settled round that broke the player shows no offer over the hand.
+        var engine = BlackjackTests.table("Tc 9d 6h Tc", bet: 100, bankroll: 100)
+        BlackjackTests.runDealer(&engine)
+        engine.perform(.stand)
+        BlackjackTests.runDealer(&engine)
+        game.adoptForScreenshot(engine, coach: .hints)
+        t.check("while the losing hand is still on the cloth, nothing covers it",
+                game.engine.phase == .settled && game.engine.isBroke && Banner.banners(in: table).isEmpty)
+        let shown = Banner.banners(in: table).count
+        game.resetBankroll()
+        t.check("and a reset from there clears the hand and leaves no offer up", shown == 0
+                && Banner.banners(in: table).isEmpty && game.engine.phase == .betting && game.engine.bankroll == 1_000)
+    }
+
+    /// A natural on 25 pays 37½ — on the cloth, on its capsule, in the pill.
+    private static func halfChips(_ game: BlackjackGame, _ t: TestReporter) {
+        let table = game.table
+        // The moment the payout lands, before it is collected.
+        var natural = BlackjackTests.table("As 9d Kh 8c", bet: 25)
+        BlackjackTests.runDealer(&natural)
+        game.adoptForScreenshot(natural, coach: .hints)
+        let label = table.badgeTextForTesting("hand0") ?? ""
+        t.check("a natural on 25 pays 37.5 into the circle and says so ('\(label)')",
+                table.stackAmountForTesting(.payout(0)) == 37.5 && label == "Blackjack +" + BlackjackAmount(37.5).formatted)
+
+        // Played through the table, the half reaches the bankroll.
+        game.resetBankroll()
+        game.clearBet()
+        game.stackShoeForTesting(BlackjackTests.cards("As 9d Kh 8c"))
+        game.pickChip(25)
+        game.deal()
+        game.runDealerForTesting()
+        let pill = TopBarStatus.items(for: .blackjack).first { $0.id == "bankroll" }?.text ?? ""
+        t.check("and the half reaches the bankroll ('\(pill)')", game.engine.bankroll == 1_037.5
+                && pill.contains(BlackjackAmount(1_037.5).formatted) && game.engine.isBalanced)
+    }
+
+    // MARK: Nothing on top of anything
+
+    /// At the smallest, the default and a large window: the insurance bet's
+    /// capsule clear of the player's cards, the insurance question clear of
+    /// the dealer's total and the player's cards, and a four-way split's
+    /// chips and capsules each clear of the next hand's.
+    private static func layout(_ game: BlackjackGame, _ t: TestReporter, window: NSWindow) {
+        let table = game.table
+        var problems: [String] = []
+        func cardTop() -> CGFloat {
+            table.spriteIDs.compactMap { id -> CGFloat? in
+                guard let pose = table.pose(of: id), pose.position.y > table.bounds.midY * 0.8 else { return nil }
+                return pose.position.y - table.cardSize.height / 2
+            }.min() ?? .greatestFiniteMagnitude
+        }
+        for size in [CGSize(width: 960, height: 640), CGSize(width: 1200, height: 800), CGSize(width: 1728, height: 1080)] {
+            window.setContentSize(size)
+            game.view.frame = CGRect(origin: .zero, size: size)
+            game.view.layoutSubtreeIfNeeded()
+            let name = "\(Int(size.width))"
+
+            var insured = BlackjackTests.table("Tc Ad 9h 7c")
+            insured.decideInsurance(take: true)
+            game.adoptForScreenshot(insured, coach: .hints)
+            if let frame = table.stackFrameForTesting(.insurance), frame.maxY > cardTop() + 1 {
+                problems.append("\(name): the insurance bet runs under the cards")
+            }
+
+            game.adoptForScreenshot(BlackjackTests.table("Tc Ad 9h 7c"), coach: .hints)
+            if let prompt = table.prompt, let dealer = table.badgeFrameForTesting("dealer") {
+                if prompt.frame.intersects(dealer) { problems.append("\(name): the insurance question covers the dealer's total") }
+                if prompt.frame.maxY > cardTop() { problems.append("\(name): the insurance question covers the cards") }
+            } else {
+                problems.append("\(name): no insurance question")
+            }
+
+            var split = BlackjackTests.table("8s 6c 8h Tc 8d 8c 3c Kd 2h 9s Qs 5d 7s", bet: 185, bankroll: 2_000)
+            for action in [BlackjackAction.split, .split, .split, .double, .double, .stand, .stand] {
+                split.perform(action)
+                BlackjackTests.runDealer(&split)
+            }
+            game.adoptForScreenshot(split, coach: .hints)
+            // The chips and capsules themselves, not the shadow room round them.
+            func chips(_ key: BlackjackScene.Stack) -> CGRect? { table.stackFrameForTesting(key)?.insetBy(dx: 6, dy: 0) }
+            for i in 0..<3 {
+                if let payout = chips(.payout(i)), let next = chips(.bet(i + 1)), payout.intersects(next) {
+                    problems.append("\(name): hand \(i)'s winnings run into hand \(i + 1)'s bet")
+                }
+                if let a = table.badgeFrameForTesting("hand\(i)"), let b = table.badgeFrameForTesting("hand\(i + 1)"), a.intersects(b) {
+                    problems.append("\(name): hand \(i)'s capsule overlaps hand \(i + 1)'s")
+                }
+            }
+            if split.round?.hands.count != 4 || split.phase != .settled { problems.append("\(name): the split did not play out") }
+        }
+        window.setContentSize(CGSize(width: 1200, height: 800))
+        game.view.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+        game.view.layoutSubtreeIfNeeded()
+        if !problems.isEmpty { t.info("layout: \(problems.joined(separator: "; "))") }
+        t.check("at 960, 1200 and 1728 wide nothing on the cloth covers anything it should not", problems.isEmpty)
+        game.resetBankroll()
     }
 
     private static func keyEvent(_ characters: String, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) -> NSEvent? {

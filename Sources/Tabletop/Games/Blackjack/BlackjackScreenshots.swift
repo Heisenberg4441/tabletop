@@ -15,6 +15,12 @@
 //    new-game   the table rules card
 //    cut-card   a natural paid on the last hand before the shuffle, the cut
 //               card out on the cloth
+//    four-split eights split to four hands on a 185 bet, two doubled, the
+//               dealer bust and every hand paid
+//    half-chip  a natural on 25, paid 37½ with a half piece beside the chips
+//    minimum    a lone 5 chip in the circle, under the table minimum
+//    broke      the last chips lost, the table cleared, a new bankroll offered
+//    reset      Reset Bankroll…'s confirmation
 //
 
 import AppKit
@@ -23,7 +29,7 @@ import AppKit
 enum BlackjackScreenshots {
 
     static func prepare(_ game: BlackjackGame, scenario: String) {
-        var engine = warmTable()
+        var engine = warmTable(bankroll: scenario == "four-split" ? 2_000 : 1_000)
         var coach = BlackjackCoachLevel.hints
         switch scenario {
         case "decision":
@@ -43,6 +49,25 @@ enum BlackjackScreenshots {
             deal("6h 6c 5d Ts Kh 9c", into: &engine)
             engine.perform(.double)
             finishDealer(&engine)
+        case "four-split":
+            deal("8s 6c 8h Tc 8d 8c 3c Kd 2h 9s Qs 5d 7s", bet: 185, into: &engine)
+            for action in [BlackjackAction.split, .split, .split, .double, .double, .stand, .stand] {
+                engine.perform(action)
+                finishDealer(&engine)
+            }
+        case "half-chip":
+            deal("As 9d Kh 8c", bet: 25, into: &engine)
+        case "minimum":
+            engine.addToBet(5)
+        case "broke":
+            var rounds = 0
+            while !engine.isBroke && rounds < 10 {
+                deal("Tc 9d 6h Tc", bet: min(engine.rules.maximumBet, engine.betHeadroom), into: &engine)
+                engine.perform(.stand)
+                finishDealer(&engine)
+                engine.collect()
+                rounds += 1
+            }
         case "cut-card":
             // Rounds until the next deal takes the cut card out (collecting
             // a round with it out would shuffle, so stop just short).
@@ -53,20 +78,21 @@ enum BlackjackScreenshots {
             }
             deal("As 9d Kh 7c", into: &engine)
         default:
-            // betting, new-game
+            // betting, new-game, reset
             for chip in [100, 25, 25] { engine.addToBet(chip) }
         }
         game.adoptForScreenshot(engine, coach: coach)
         switch scenario {
         case "decision": game.showHint(nil)
         case "new-game": game.newGame(nil)
+        case "reset": game.resetBankrollFromMenu(nil)
         default: break
         }
     }
 
     /// A six-deck shoe a dozen rounds in.
-    private static func warmTable() -> BlackjackEngine {
-        var engine = BlackjackEngine(seed: 0x5407_0001)
+    private static func warmTable(bankroll: BlackjackAmount) -> BlackjackEngine {
+        var engine = BlackjackEngine(seed: 0x5407_0001, bankroll: bankroll)
         for bet in [25, 50, 50, 100, 25, 75, 100, 50, 150, 100, 50, 100] { playRound(&engine, bet: bet) }
         return engine
     }
@@ -91,10 +117,10 @@ enum BlackjackScreenshots {
         engine.collect()
     }
 
-    /// Bets 100 on the named cards and deals them. A shoe well into its run
-    /// may have dealt every copy of one of them; then the same rank in
+    /// Bets `bet` on the named cards and deals them. A shoe well into its
+    /// run may have dealt every copy of one of them; then the same rank in
     /// another suit stands in (or, for a ten, any ten-card).
-    private static func deal(_ cards: String, into engine: inout BlackjackEngine) {
+    private static func deal(_ cards: String, bet: Int = 100, into engine: inout BlackjackEngine) {
         var pool = engine.shoe.undealt.map { Card(code: UInt8($0 % 52)) }
         var arranged: [Card] = []
         for card in BlackjackTests.cards(cards) {
@@ -103,7 +129,7 @@ enum BlackjackScreenshots {
             if let index { arranged.append(pool.remove(at: index)) }
         }
         engine.stackShoe(arranged)
-        engine.addToBet(100)
+        engine.addToBet(bet)
         engine.deal()
         finishDealer(&engine)
     }

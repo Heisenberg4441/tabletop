@@ -24,7 +24,8 @@
 //  on the open cloth between the circle and the rail, rather than by the
 //  kit: the kit drops it for room at every common window size, and the rule
 //  the dealer plays by — which the player chooses — is a line they must be
-//  able to read.
+//  able to read. So is the table's limit sign, beside the dealer's rack: a
+//  player whose 5 chip will not deal should be able to see why.
 //
 
 import AppKit
@@ -50,15 +51,20 @@ final class BlackjackTableView: CardTableView {
         didSet { if dealerRule != oldValue { invalidateBackground() } }
     }
 
+    /// The table limits, on the sign beside the rack.
+    var limits = (minimum: BlackjackRules().minimumBet, maximum: BlackjackRules().maximumBet) {
+        didSet { if limits != oldValue { invalidateBackground() } }
+    }
+
     private let shoeLayer = BlackjackShoeLayer()
     private let discardLayer = BlackjackDiscardLayer()
     private let activeMark = CALayer()
-    private var stackLayers: [BlackjackScene.Stack: ChipStackLayer] = [:]
+    private var stackLayers: [BlackjackScene.Stack: BlackjackChipStack] = [:]
     /// What each stack draws now, what is flying towards it, and what it is
     /// meant to hold once everything lands.
-    private var displayed: [BlackjackScene.Stack: Int] = [:]
-    private var incoming: [BlackjackScene.Stack: Int] = [:]
-    private var targets: [BlackjackScene.Stack: Int] = [:]
+    private var displayed: [BlackjackScene.Stack: BlackjackAmount] = [:]
+    private var incoming: [BlackjackScene.Stack: BlackjackAmount] = [:]
+    private var targets: [BlackjackScene.Stack: BlackjackAmount] = [:]
     private var badges: [String: TableBadge] = [:]
     /// Cards on their way to the discard holder, removed when they land.
     private var sweeping: Set<Int> = []
@@ -141,18 +147,24 @@ final class BlackjackTableView: CardTableView {
         /// Where each hand's capsule is pinned, and on which side.
         var badges: [(point: CGPoint, anchor: TableBadge.Anchor)] = []
         var stackPoints: [BlackjackScene.Stack: CGPoint] = [:]
+        /// The hands' chips stand as one mixed column each: the round is split.
+        var mixedStacks = false
+        /// Where the word about the bet goes: over the circle.
+        var noticePoint = CGPoint.zero
         /// The glow under the active hand: its middle, length and turn.
         var mark: (center: CGPoint, length: CGFloat, rotation: CGFloat)?
     }
 
     /// One chip, across, on this table.
     private var chipDiameter: CGFloat {
-        max(22, min(32, geometry.betSpotRadius * 0.62)).rounded()
+        max(22, min(34, geometry.betSpotRadius * 0.66)).rounded()
     }
 
-    private func stackWidth(_ amount: Int) -> CGFloat {
-        let n = max(1, ChipStackLayer.stacks(for: amount, maximumPerStack: 10, maximumStacks: 6).count)
-        return CGFloat(n) * chipDiameter + CGFloat(n - 1) * chipDiameter * 0.10
+    /// The room `amount` takes on the cloth: its chips, or the capsule under
+    /// them if that is wider.
+    private func footprint(_ amount: BlackjackAmount, _ label: BlackjackChipStack.Label, mixed: Bool) -> CGFloat {
+        max(BlackjackChipStack.chipsWidth(of: amount, diameter: chipDiameter, mixed: mixed),
+            BlackjackChipStack.labelWidth(of: amount, diameter: chipDiameter, label: label))
     }
 
     private func layout(for scene: BlackjackScene) -> Layout {
@@ -181,6 +193,8 @@ final class BlackjackTableView: CardTableView {
         let hands = scene.hands
         let gap = w * 0.34
         let dy = h * 0.035
+        // Each hand's bet point and the way along the curve.
+        var fronts: [(point: CGPoint, along: CGVector)] = []
 
         func local(_ hand: BlackjackScene.Hand, dx: CGFloat) -> (cards: [(CGPoint, CGFloat)], box: CGRect) {
             var cards: [(CGPoint, CGFloat)] = []
@@ -252,45 +266,73 @@ final class BlackjackTableView: CardTableView {
                 layout.cards[placed.card.id] = (pose, placed.faceUp, placed.card.card)
             }
             layout.handBoxes.append(TableLayout.bounds(of: poses, cardSize: cardSize))
-            // The total: beside a lone hand; on the foot of each split hand,
-            // where it cannot be mistaken for its neighbour's.
+            // The total: beside a lone hand. Over each split hand, on the
+            // cloth towards the dealer, where it cannot be mistaken for a
+            // neighbour's: on the cards the glass would sit on white and lose
+            // its contrast, and in front of them is the bet.
             if hands.count == 1 {
                 let box = TableLayout.bounds(of: poses, cardSize: cardSize)
                 layout.badges.append((CGPoint(x: box.maxX, y: box.midY), .trailing))
             } else {
-                // Under the upright cards, clear of a crosswise double's index.
+                // Over the upright cards, not a crosswise double.
                 let upright = zip(hand.cards, shape.cards).filter { !$0.0.sideways }.map(\.1.0.x)
-                let footX = upright.isEmpty ? shape.box.midX : ((upright.min() ?? 0) + (upright.max() ?? 0)) / 2
-                layout.badges.append((onTable(CGPoint(x: footX, y: shape.box.maxY - TableBadge.height * 0.62)), .center))
+                let topX = upright.isEmpty ? shape.box.midX : ((upright.min() ?? 0) + (upright.max() ?? 0)) / 2
+                layout.badges.append((onTable(CGPoint(x: topX, y: shape.box.minY)), .above))
             }
 
-            // The bet on the cloth in front of the hand — in the circle for
-            // a lone hand, beside it for the others.
+            // The bet on the cloth in front of the hand: in the circle for a
+            // lone hand, in front of each split hand.
             let chip = CGPoint(x: center.x - chipDrop * sn, y: center.y + chipDrop * c)
             layout.stackPoints[.bet(i)] = chip
-            let bet = scene.stacks[.bet(i)]?.amount ?? 0
-            let payout = scene.stacks[.payout(i)]?.amount ?? 0
-            let along = stackWidth(bet) / 2 + chipDiameter * 0.30 + stackWidth(payout) / 2
-            layout.stackPoints[.payout(i)] = CGPoint(x: chip.x + along * c, y: chip.y + along * sn)
+            fronts.append((chip, CGVector(dx: c, dy: sn)))
 
             if hand.isActive {
                 let bottom = shape.box.maxY + 5
                 layout.mark = (onTable(CGPoint(x: shape.box.midX, y: bottom)), shape.box.width * 0.78, turn)
             }
         }
+        // Winnings beside each bet, along the curve and far enough along
+        // that the two capsules under them stay apart — but never into the
+        // next hand's bet. A split round's chips stand in mixed columns, so
+        // four hands' worth fit side by side.
+        let d = chipDiameter
+        let mixed = hands.count > 1
+        layout.mixedStacks = mixed
+        for (i, front) in fronts.enumerated() {
+            let bet = scene.stacks[.bet(i)]?.amount ?? .zero
+            let payout = scene.stacks[.payout(i)]?.amount ?? .zero
+            let betChips = BlackjackChipStack.chipsWidth(of: bet, diameter: d, mixed: mixed)
+            let payoutChips = BlackjackChipStack.chipsWidth(of: payout, diameter: d, mixed: mixed)
+            var along = max(betChips / 2 + d * 0.30 + payoutChips / 2,
+                            (footprint(bet, .amount, mixed: mixed) + footprint(payout, .gain, mixed: mixed)) / 2 + 6)
+            if let next = fronts[safe: i + 1] {
+                let nextBet = scene.stacks[.bet(i + 1)]?.amount ?? .zero
+                let room = hypot(next.point.x - front.point.x, next.point.y - front.point.y)
+                    - footprint(nextBet, .amount, mixed: mixed) / 2 - footprint(payout, .gain, mixed: mixed) / 2 - 6
+                along = min(along, max(d * 0.8, room))
+            }
+            layout.stackPoints[.payout(i)] = CGPoint(x: front.point.x + along * front.along.dx,
+                                                     y: front.point.y + along * front.along.dy)
+        }
         // Before the deal the bet is in the circle.
         if hands.isEmpty {
             layout.stackPoints[.bet(0)] = CGPoint(x: spot.x, y: spot.y + g.betSpotRadius * 0.30)
         }
+        layout.noticePoint = CGPoint(x: spot.x, y: spot.y - g.betSpotRadius)
 
-        // Insurance on its band, in front of the circle.
+        // Insurance on its band, in front of the circle and a little towards
+        // the dealer, its capsule clear of the player's two cards.
         let insurance = g.insuranceSpot(forBetSpot: 0) ?? CGPoint(x: spot.x, y: spot.y - h * 1.4)
-        let insurancePoint = CGPoint(x: insurance.x - chipDiameter * 0.7, y: insurance.y + chipDiameter * 0.2)
+        let handTop = anchor.y - h * 0.52 - 2
+        let insurancePoint = CGPoint(x: insurance.x - d * 0.7,
+                                     y: min(insurance.y - d * 0.3, handTop - BlackjackChipStack.labelDrop(diameter: d) - 4))
         layout.stackPoints[.insurance] = insurancePoint
-        let insured = scene.stacks[.insurance]?.amount ?? 0
-        let paid = scene.stacks[.insurancePayout]?.amount ?? 0
-        layout.stackPoints[.insurancePayout] = CGPoint(
-            x: insurancePoint.x + stackWidth(insured) / 2 + chipDiameter * 0.3 + stackWidth(paid) / 2, y: insurancePoint.y)
+        let insured = scene.stacks[.insurance]?.amount ?? .zero
+        let paid = scene.stacks[.insurancePayout]?.amount ?? .zero
+        let insuranceAlong = max(BlackjackChipStack.chipsWidth(of: insured, diameter: d, mixed: false) / 2 + d * 0.3
+                                    + BlackjackChipStack.chipsWidth(of: paid, diameter: d, mixed: false) / 2,
+                                 (footprint(insured, .amount, mixed: false) + footprint(paid, .gain, mixed: false)) / 2 + 6)
+        layout.stackPoints[.insurancePayout] = CGPoint(x: insurancePoint.x + insuranceAlong, y: insurancePoint.y)
         return layout
     }
 
@@ -314,16 +356,26 @@ final class BlackjackTableView: CardTableView {
     /// The question on the table, kept pinned between the hands.
     weak var prompt: BlackjackPrompt?
 
-    /// Where the insurance question goes: over the printed insurance band,
-    /// between the dealer's cards (and their total) and the player's.
-    var promptPoint: CGPoint {
+    /// Where the insurance question goes, and whether it has to fold its
+    /// two lines into one to fit. On a big table there is open cloth under
+    /// the dealer's total, above the lettering, and it goes there; otherwise
+    /// over the printed insurance band, between the dealer's hand and the
+    /// player's — both stay in view while the player decides.
+    var promptPlacement: (point: CGPoint, compact: Bool) {
         let g = geometry
-        let handTop = g.playerCardAnchor(forBetSpot: 0).y - cardSize.height / 2
-        let dealerBottom = g.dealerArea.y + cardSize.height / 2 + TableBadge.height + 8
+        let h = cardSize.height
+        let handTop = g.playerCardAnchor(forBetSpot: 0).y - h * 0.52 - 2
+        let dealerBottom = g.dealerArea.y + h / 2 + TableBadge.height + 10
         let headline = g.arcCenter.y + (g.markings?.headlineRadius ?? 0)
-        let half = BlackjackPrompt.height / 2
+        let lettersTop = headline - (g.markings?.size ?? 16)
+        let full = BlackjackPrompt.height
+        if lettersTop - dealerBottom >= full + 8 {
+            return (CGPoint(x: g.dealerArea.x, y: (dealerBottom + 2 + full / 2).rounded()), false)
+        }
+        let compact = handTop - dealerBottom < full + 4
+        let half = (compact ? BlackjackPrompt.compactHeight : full) / 2
         let y = min(max(dealerBottom + half, (headline + handTop) / 2), handTop - half - 2)
-        return CGPoint(x: g.dealerArea.x, y: y.rounded())
+        return (CGPoint(x: g.dealerArea.x, y: y.rounded()), compact)
     }
 
     /// Where a banner between the dealer's cards and the player's belongs, as
@@ -427,23 +479,37 @@ final class BlackjackTableView: CardTableView {
         applyBadges(layout, animate: animate)
         applyMark(layout, animate: animate)
         updateFurniture()
-        prompt?.move(to: promptPoint)
+        if let prompt {
+            let placement = promptPlacement
+            prompt.move(to: placement.point, compact: placement.compact)
+        }
     }
 
     private func applyStacks(_ layout: Layout, animate: Bool, chipOrigin: CGPoint?) {
         let d = chipDiameter
         let keys = Set(scene.stacks.keys).union(stackLayers.keys)
         for key in keys {
-            let target = scene.stacks[key]?.amount ?? 0
+            let target = scene.stacks[key]?.amount ?? .zero
             let lost = scene.stacks[key]?.lost ?? false
             targets[key] = target
             let point = layout.stackPoints[key] ?? stackLayers[key]?.position ?? bankrollPoint
-            let layer: ChipStackLayer
+            let label: BlackjackChipStack.Label
+            let mixed: Bool
+            switch key {
+            case .bet: (label, mixed) = (.amount, layout.mixedStacks)
+            case .payout: (label, mixed) = (.gain, layout.mixedStacks)
+            case .insurance: (label, mixed) = (.amount, false)
+            case .insurancePayout: (label, mixed) = (.gain, false)
+            }
+            let layer: BlackjackChipStack
             if let existing = stackLayers[key] {
                 layer = existing
-                if existing.chipDiameter != d { existing.chipDiameter = d }
+                layer.chipDiameter = d
+                layer.label = label
+                // A split: the bet restacks itself as the player's column.
+                layer.setMixed(mixed, animated: animate)
                 if hypot(existing.position.x - point.x, existing.position.y - point.y) > 0.5 {
-                    if animate && (displayed[key] ?? 0) > 0 {
+                    if animate && (displayed[key] ?? .zero) > .zero {
                         let slide = CABasicAnimation(keyPath: "position")
                         slide.fromValue = NSValue(point: existing.presentation()?.position ?? existing.position)
                         slide.toValue = NSValue(point: point)
@@ -454,22 +520,20 @@ final class BlackjackTableView: CardTableView {
                     existing.position = point
                 }
             } else {
-                guard target > 0 else { continue }
-                layer = ChipStackLayer()
+                guard target > .zero else { continue }
+                layer = BlackjackChipStack()
                 layer.chipDiameter = d
-                switch key {
-                case .payout, .insurancePayout: layer.showsLabel = false
-                case .bet, .insurance: layer.showsLabel = true
-                }
+                layer.label = label
+                layer.isMixed = mixed
                 layer.position = point
                 addTableLayer(layer, z: -10)
                 stackLayers[key] = layer
             }
 
-            let shown = displayed[key] ?? 0
-            let flying = incoming[key] ?? 0
+            let shown = displayed[key] ?? .zero
+            let flying = incoming[key] ?? .zero
             let delta = target - (shown + flying)
-            if delta > 0 {
+            if delta > .zero {
                 guard animate else {
                     displayed[key] = target - flying
                     layer.setAmount(target - flying, animated: false)
@@ -482,19 +546,21 @@ final class BlackjackTableView: CardTableView {
                 case .bet(0) where chipOrigin != nil: from = chipOrigin ?? bankrollPoint
                 default: from = bankrollPoint
                 }
-                ChipFlight.fly(amount: delta, from: from, to: point, in: tableLayer, chipDiameter: d) { [weak self, weak layer] in
+                // A lone half flies as the smallest chip there is.
+                ChipFlight.fly(amount: max(1, delta.wholeChips), from: from, to: point, in: tableLayer,
+                               chipDiameter: d) { [weak self, weak layer] in
                     guard let self, let layer else { return }
-                    self.incoming[key] = max(0, (self.incoming[key] ?? 0) - delta)
-                    let now = max(0, (self.targets[key] ?? 0) - (self.incoming[key] ?? 0))
+                    self.incoming[key] = max(.zero, (self.incoming[key] ?? .zero) - delta)
+                    let now = max(.zero, (self.targets[key] ?? .zero) - (self.incoming[key] ?? .zero))
                     self.displayed[key] = now
                     layer.setAmount(now, animated: true)
                 }
-            } else if delta < 0 {
-                let now = max(0, target - flying)
+            } else if delta < .zero {
+                let now = max(.zero, target - flying)
                 displayed[key] = now
                 layer.setAmount(now, animated: animate)
                 if animate {
-                    ChipFlight.fly(amount: -delta, from: layer.position, to: lost ? trayPoint : bankrollPoint,
+                    ChipFlight.fly(amount: max(1, (-delta).wholeChips), from: layer.position, to: lost ? trayPoint : bankrollPoint,
                                    in: tableLayer, chipDiameter: d)
                 }
             } else if !animate && layer.amount != shown {
@@ -526,6 +592,7 @@ final class BlackjackTableView: CardTableView {
             }
             set("hand\(i)", hand.label, tone: hand.tone, at: pin.point, anchor: pin.anchor)
         }
+        set("notice", scene.notice, tone: .neutral, at: layout.noticePoint, anchor: .above)
     }
 
     private func applyMark(_ layout: Layout, animate: Bool) {
@@ -573,7 +640,7 @@ final class BlackjackTableView: CardTableView {
 
     // MARK: The printed rule
 
-    override func backgroundSignature() -> String { dealerRule }
+    override func backgroundSignature() -> String { "\(dealerRule)|\(limits.minimum)|\(limits.maximum)" }
 
     override func paintBackground(in ctx: CGContext, rect: CGRect) {
         super.paintBackground(in: ctx, rect: rect)
@@ -596,6 +663,64 @@ final class BlackjackTableView: CardTableView {
                                      color: NSColor(white: 1, alpha: 0.46), kern: size * 0.24, context: ctx)
         }
         ctx.restoreGState()
+        paintLimitSign(in: ctx)
+    }
+
+    /// The table limits on a small smoked-acrylic sign, standing between the
+    /// discard holder and the dealer's rack where a casino puts its own —
+    /// left out on a window too narrow to give it room.
+    private func paintLimitSign(in ctx: CGContext) {
+        let g = geometry
+        guard let tray = g.chipTray, let markings = g.markings else { return }
+        let size = max(9, min(13, markings.size * 0.56))
+        let labelFont = NSFont.systemFont(ofSize: size * 0.80, weight: .semibold)
+        let valueFont = Typography.number(size * 1.08, weight: .semibold)
+        let rows = [(NSLocalizedString("MIN", comment: "blackjack limit sign: the minimum bet"), Chips.format(limits.minimum)),
+                    (NSLocalizedString("MAX", comment: "blackjack limit sign: the maximum bet"), Chips.format(limits.maximum))]
+        let labelAttributes: [NSAttributedString.Key: Any] = [.font: labelFont, .kern: size * 0.12,
+                                                              .foregroundColor: NSColor(white: 1, alpha: 0.56)]
+        let valueAttributes: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor(white: 1, alpha: 0.90)]
+        let labelWidth = rows.map { ($0.0 as NSString).size(withAttributes: labelAttributes).width }.max() ?? 0
+        let valueWidth = rows.map { ($0.1 as NSString).size(withAttributes: valueAttributes).width }.max() ?? 0
+        let lineHeight = ceil(valueFont.ascender - valueFont.descender)
+        let pad = size * 0.75
+        let width = ceil(pad * 2 + labelWidth + size * 0.9 + valueWidth)
+        let height = ceil(pad * 1.5 + lineHeight * 2 + size * 0.15)
+        // The holder's right edge, allowing for its turn, to the rack's left.
+        let holderRight = g.discardTray.x + cardSize.width / 2 + 12 + cardSize.height * 0.06
+        guard tray.minX - holderRight >= width + 20 else { return }
+        let sign = CGRect(x: ((holderRight + tray.minX - width) / 2).rounded(), y: (tray.minY + 2).rounded(),
+                          width: width, height: height)
+        let path = ContinuousShape.roundedRect(sign, radius: size * 0.45)
+        ctx.saveGState()
+        // Standing on the cloth, lit from above left: its shadow falls down and right.
+        ctx.setShadow(offset: CGSize(width: size * 0.2, height: size * 0.45), blur: size * 0.9,
+                      color: NSColor(white: 0, alpha: 0.55).cgColor)
+        ctx.addPath(path)
+        ctx.setFillColor(NSColor(white: 0.05, alpha: 1).cgColor)
+        ctx.fillPath()
+        ctx.restoreGState()
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
+        AppleStyle.fillVertical(sign, context: ctx, [(NSColor(white: 0.17, alpha: 1), 0), (NSColor(white: 0.06, alpha: 1), 1)])
+        ctx.restoreGState()
+        AppleStyle.gloss(path, in: sign, context: ctx, strength: 0.8)
+        AppleStyle.bevel(path, in: sign, context: ctx, width: 1, top: NSColor(white: 1, alpha: 0.26),
+                         bottom: NSColor(white: 0, alpha: 0.5))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        var y = sign.minY + pad * 0.75
+        for (label, value) in rows {
+            let labelSize = (label as NSString).size(withAttributes: labelAttributes)
+            (label as NSString).draw(at: CGPoint(x: sign.minX + pad, y: y + (lineHeight - labelSize.height) / 2 + size * 0.05),
+                                     withAttributes: labelAttributes)
+            let valueSize = (value as NSString).size(withAttributes: valueAttributes)
+            (value as NSString).draw(at: CGPoint(x: sign.maxX - pad - valueSize.width, y: y + (lineHeight - valueSize.height) / 2),
+                                     withAttributes: valueAttributes)
+            y += lineHeight + size * 0.15
+        }
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     // MARK: Input
@@ -627,7 +752,15 @@ final class BlackjackTableView: CardTableView {
     // MARK: For the tests
 
     /// Stack amounts as drawn, once everything has landed.
-    func stackAmountForTesting(_ key: BlackjackScene.Stack) -> Int { displayed[key] ?? 0 }
+    func stackAmountForTesting(_ key: BlackjackScene.Stack) -> BlackjackAmount { displayed[key] ?? .zero }
+
+    /// Where a stack stands, and its layer's size — for the layout checks.
+    func stackFrameForTesting(_ key: BlackjackScene.Stack) -> CGRect? {
+        guard let layer = stackLayers[key], (displayed[key] ?? .zero) > .zero else { return nil }
+        return layer.frame
+    }
+
+    func badgeFrameForTesting(_ key: String) -> CGRect? { badges[key]?.frame }
 
     /// Card sprites that belong to the scene (not ones on their way out).
     var sceneSpriteCount: Int {

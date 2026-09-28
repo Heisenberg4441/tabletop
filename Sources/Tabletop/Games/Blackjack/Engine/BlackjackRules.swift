@@ -64,8 +64,9 @@ struct BlackjackRules: Codable, Equatable {
         surrenderAllowed = value(.surrenderAllowed, defaults.surrenderAllowed)
         doubleAfterSplit = value(.doubleAfterSplit, defaults.doubleAfterSplit)
         maximumHands = max(1, min(4, value(.maximumHands, defaults.maximumHands)))
-        minimumBet = max(5, value(.minimumBet, defaults.minimumBet))
-        maximumBet = max(minimumBet, value(.maximumBet, defaults.maximumBet))
+        // Limits a new bankroll can always meet, and a maximum above them.
+        minimumBet = max(5, min(100, value(.minimumBet, defaults.minimumBet)))
+        maximumBet = max(minimumBet, min(10_000, value(.maximumBet, defaults.maximumBet)))
         let penetration = value(.penetration, defaults.penetration)
         self.penetration = (0.5...0.9).contains(penetration) ? penetration : defaults.penetration
     }

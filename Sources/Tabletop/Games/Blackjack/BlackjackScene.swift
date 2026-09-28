@@ -42,7 +42,7 @@ struct BlackjackScene: Equatable {
     }
 
     struct StackAmount: Equatable {
-        var amount: Int
+        var amount: BlackjackAmount
         /// Chips leaving this stack go to the dealer's rack, not the player.
         var lost = false
     }
@@ -57,6 +57,9 @@ struct BlackjackScene: Equatable {
     var isCutCardOut = false
     var discardCount = 0
     var shoeSize = 312
+    /// A word by the betting circle: the bet in it is under the table
+    /// minimum, which is why Deal is waiting.
+    var notice: String?
 
     init() {}
 
@@ -71,7 +74,11 @@ struct BlackjackScene: Equatable {
         discardCount = shoe.discard.count
         shoeSize = shoe.size
         guard let round = engine.round else {
-            stacks[.bet(0)] = StackAmount(amount: engine.pendingBet)
+            stacks[.bet(0)] = StackAmount(amount: BlackjackAmount(engine.pendingBet))
+            if engine.pendingBet > 0 && engine.pendingBet < engine.rules.minimumBet {
+                notice = String(format: NSLocalizedString("Minimum bet %@", comment: "blackjack: the bet is under the table minimum, e.g. Minimum bet 10"),
+                                Chips.format(engine.rules.minimumBet))
+            }
             return
         }
 
@@ -101,41 +108,39 @@ struct BlackjackScene: Equatable {
 
             // Chips: the bet while it rides; after settling, what is left of
             // it and the winnings beside it until the player collects.
+            let bet = BlackjackAmount(hand.bet)
             if let result = hand.result {
                 switch result {
-                case .win, .evenMoney:
-                    stacks[.bet(i)] = StackAmount(amount: hand.bet)
-                    stacks[.payout(i)] = StackAmount(amount: hand.returned - hand.bet)
-                case .blackjack:
-                    stacks[.bet(i)] = StackAmount(amount: hand.bet)
-                    stacks[.payout(i)] = StackAmount(amount: hand.returned - hand.bet)
+                case .win, .evenMoney, .blackjack:
+                    stacks[.bet(i)] = StackAmount(amount: bet)
+                    stacks[.payout(i)] = StackAmount(amount: hand.returned - bet)
                 case .push:
-                    stacks[.bet(i)] = StackAmount(amount: hand.bet)
+                    stacks[.bet(i)] = StackAmount(amount: bet)
                 case .surrender:
                     stacks[.bet(i)] = StackAmount(amount: hand.returned, lost: true)
                 case .lose, .bust:
-                    stacks[.bet(i)] = StackAmount(amount: 0, lost: true)
+                    stacks[.bet(i)] = StackAmount(amount: .zero, lost: true)
                 }
             } else if hand.isBust {
                 // A busted bet is taken at once, as a dealer does.
-                stacks[.bet(i)] = StackAmount(amount: 0, lost: true)
+                stacks[.bet(i)] = StackAmount(amount: .zero, lost: true)
             } else {
-                stacks[.bet(i)] = StackAmount(amount: hand.bet)
+                stacks[.bet(i)] = StackAmount(amount: bet)
             }
             hands.append(shown)
         }
 
         if round.phase == .settled && chipsCollected {
-            for key in stacks.keys { stacks[key] = StackAmount(amount: 0) }
+            for key in stacks.keys { stacks[key] = StackAmount(amount: .zero) }
             return
         }
 
-        if round.insurance > 0 {
+        if round.insurance > .zero {
             switch round.insuranceReturned {
             case nil:
                 stacks[.insurance] = StackAmount(amount: round.insurance)
-            case .some(0):
-                stacks[.insurance] = StackAmount(amount: 0, lost: true)
+            case .some(.zero):
+                stacks[.insurance] = StackAmount(amount: .zero, lost: true)
             case .some(let returned):
                 stacks[.insurance] = StackAmount(amount: round.insurance)
                 stacks[.insurancePayout] = StackAmount(amount: returned - round.insurance)
@@ -144,7 +149,7 @@ struct BlackjackScene: Equatable {
     }
 
     /// What's in the circles, all told.
-    var chipsOnCloth: Int { stacks.values.reduce(0) { $0 + $1.amount } }
+    var chipsOnCloth: BlackjackAmount { stacks.values.reduce(.zero) { $0 + $1.amount } }
 
     // MARK: Words
 
@@ -161,17 +166,17 @@ struct BlackjackScene: Equatable {
     static func label(for hand: BlackjackHand, dealt: Bool) -> (String?, Banner.Tone) {
         guard !hand.cards.isEmpty else { return (nil, .neutral) }
         if let result = hand.result {
-            let net = hand.returned - hand.bet
+            let net = (hand.returned - BlackjackAmount(hand.bet)).formattedChange
             switch result {
             case .blackjack:
                 return (String(format: NSLocalizedString("Blackjack %@", comment: "blackjack result: a natural, e.g. Blackjack +75"),
-                               Chips.formatChange(net)), .win)
+                               net), .win)
             case .evenMoney:
                 return (String(format: NSLocalizedString("Even Money %@", comment: "blackjack result, e.g. Even Money +50"),
-                               Chips.formatChange(net)), .win)
+                               net), .win)
             case .win:
                 return (String(format: NSLocalizedString("Win %@", comment: "blackjack result, e.g. Win +50"),
-                               Chips.formatChange(net)), .win)
+                               net), .win)
             case .push:
                 return (NSLocalizedString("Push", comment: "blackjack result: a tie"), .neutral)
             case .lose:
@@ -180,7 +185,7 @@ struct BlackjackScene: Equatable {
                 return (NSLocalizedString("Bust", comment: "blackjack hand label: over 21"), .loss)
             case .surrender:
                 return (String(format: NSLocalizedString("Surrender %@", comment: "blackjack result, e.g. Surrender −25"),
-                               Chips.formatChange(net)), .loss)
+                               net), .loss)
             }
         }
         if hand.isSurrendered {

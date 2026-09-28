@@ -27,9 +27,9 @@
 //  back up, and the fuzz test checks it after every step of fifty thousand
 //  rounds.
 //
-//  Payouts are in whole chips. A three-to-two blackjack on a bet that is an
-//  odd multiple of five, and half a surrendered odd bet, round down — the
-//  table has no half-chips, and a casino without them does the same.
+//  Bets are whole chips; payouts are exact, to the half chip (see
+//  `BlackjackAmount`): a natural on 25 pays 37½, a surrendered 25 hands back
+//  12½, and insurance on it costs 12½.
 //
 
 import Foundation
@@ -38,11 +38,11 @@ struct BlackjackEngine: Codable, Equatable {
 
     private(set) var rules: BlackjackRules
     /// Chips in front of the player, not on the table.
-    private(set) var bankroll: Int
+    private(set) var bankroll: BlackjackAmount
     /// The dealer's rack, net: what the house has won from the player.
-    private(set) var house = 0
+    private(set) var house = BlackjackAmount.zero
     /// Every chip the player has been given.
-    private(set) var funded: Int
+    private(set) var funded: BlackjackAmount
     private(set) var shoe: BlackjackShoe
     /// The bet being built in the circle, before the deal.
     private(set) var pendingBet = 0
@@ -51,7 +51,8 @@ struct BlackjackEngine: Codable, Equatable {
     /// The round being played, or just finished and still on the table.
     private(set) var round: BlackjackRound?
 
-    init(rules: BlackjackRules = BlackjackRules(), seed: UInt64, bankroll: Int = BlackjackRules.startingBankroll) {
+    init(rules: BlackjackRules = BlackjackRules(), seed: UInt64,
+         bankroll: BlackjackAmount = BlackjackAmount(BlackjackRules.startingBankroll)) {
         self.rules = rules
         self.bankroll = bankroll
         self.funded = bankroll
@@ -61,7 +62,7 @@ struct BlackjackEngine: Codable, Equatable {
     var phase: BlackjackPhase { round?.phase ?? .betting }
 
     /// Chips on the table that are still the player's to win or lose.
-    var chipsInPlay: Int { pendingBet + (round?.chipsAtRisk ?? 0) }
+    var chipsInPlay: BlackjackAmount { BlackjackAmount(pendingBet) + (round?.chipsAtRisk ?? .zero) }
 
     /// Every chip is accounted for.
     var isBalanced: Bool { bankroll + chipsInPlay + house == funded }
@@ -71,17 +72,17 @@ struct BlackjackEngine: Codable, Equatable {
 
     // MARK: Betting
 
-    /// What the player could still add to the bet: the table maximum, or
-    /// what they have left, whichever is less.
+    /// What the player could still add to the bet, in whole chips: the
+    /// table maximum, or what they have left, whichever is less.
     var betHeadroom: Int {
         guard phase == .betting else { return 0 }
-        return max(0, min(rules.maximumBet - pendingBet, bankroll))
+        return max(0, min(rules.maximumBet - pendingBet, bankroll.wholeChips))
     }
 
     @discardableResult
     mutating func addToBet(_ amount: Int) -> Bool {
         guard phase == .betting, amount > 0, amount <= betHeadroom else { return false }
-        bankroll -= amount
+        bankroll -= BlackjackAmount(amount)
         pendingBet += amount
         return true
     }
@@ -90,13 +91,13 @@ struct BlackjackEngine: Codable, Equatable {
     mutating func removeFromBet(_ amount: Int) -> Bool {
         guard phase == .betting, amount > 0, amount <= pendingBet else { return false }
         pendingBet -= amount
-        bankroll += amount
+        bankroll += BlackjackAmount(amount)
         return true
     }
 
     mutating func clearBet() {
         guard phase == .betting else { return }
-        bankroll += pendingBet
+        bankroll += BlackjackAmount(pendingBet)
         pendingBet = 0
     }
 
@@ -104,16 +105,15 @@ struct BlackjackEngine: Codable, Equatable {
     /// is already in the circle, and the player can cover it.
     var canRebet: Bool {
         (phase == .betting || phase == .settled) && lastBet >= rules.minimumBet && lastBet <= rules.maximumBet
-            && pendingBet != lastBet && bankroll + pendingBet >= lastBet
+            && pendingBet != lastBet && bankroll + BlackjackAmount(pendingBet) >= BlackjackAmount(lastBet)
     }
 
     /// Replaces the bet in the circle with the last round's.
     @discardableResult
     mutating func rebet() -> Bool {
         guard phase == .betting, canRebet else { return false }
-        bankroll += pendingBet
+        bankroll += BlackjackAmount(pendingBet) - BlackjackAmount(lastBet)
         pendingBet = lastBet
-        bankroll -= lastBet
         return true
     }
 
@@ -177,8 +177,8 @@ struct BlackjackEngine: Codable, Equatable {
 
         case .peek:
             let blackjack = round.dealerHasBlackjack
-            if round.insurance > 0 {
-                let returned = blackjack ? round.insurance * 3 : 0
+            if round.insurance > .zero {
+                let returned = blackjack ? round.insurance * 3 : .zero
                 round.insuranceReturned = returned
                 bankroll += returned
                 house += round.insurance - returned
@@ -249,7 +249,8 @@ struct BlackjackEngine: Codable, Equatable {
 
     /// Even money needs no chips; insurance needs half the bet.
     private func canOfferInsurance(_ round: BlackjackRound) -> Bool {
-        round.hands[0].isBlackjack || (round.hands[0].bet / 2 > 0 && bankroll >= round.hands[0].bet / 2)
+        let cost = BlackjackAmount(round.hands[0].bet).half
+        return round.hands[0].isBlackjack || (cost > .zero && bankroll >= cost)
     }
 
     /// Whether the dealer draws again: only while a hand is left to beat,
@@ -268,8 +269,8 @@ struct BlackjackEngine: Codable, Equatable {
 
     // MARK: Insurance
 
-    /// What insurance would cost: half the bet, in whole chips.
-    var insuranceCost: Int { (round?.hands.first?.bet ?? 0) / 2 }
+    /// What insurance would cost: half the bet, to the half chip.
+    var insuranceCost: BlackjackAmount { BlackjackAmount(round?.hands.first?.bet ?? 0).half }
 
     /// The player holds a natural against the dealer's ace: the offer is
     /// even money rather than insurance.
@@ -284,7 +285,7 @@ struct BlackjackEngine: Codable, Equatable {
                 round.hands[0].isDone = true
             } else {
                 let cost = insuranceCost
-                guard cost > 0, cost <= bankroll else { return false }
+                guard cost > .zero, cost <= bankroll else { return false }
                 bankroll -= cost
                 round.insurance = cost
             }
@@ -308,10 +309,11 @@ struct BlackjackEngine: Codable, Equatable {
         var actions: Set<BlackjackAction> = [.stand]
         if !hand.isSplitAces { actions.insert(.hit) }
         let twoCards = hand.cards.count == 2
-        if twoCards && !hand.isSplitAces && bankroll >= hand.bet && (!hand.isFromSplit || rules.doubleAfterSplit) {
+        let covered = bankroll >= BlackjackAmount(hand.bet)
+        if twoCards && !hand.isSplitAces && covered && (!hand.isFromSplit || rules.doubleAfterSplit) {
             actions.insert(.double)
         }
-        if twoCards && hand.isPair && !hand.isSplitAces && round.hands.count < rules.maximumHands && bankroll >= hand.bet {
+        if twoCards && hand.isPair && !hand.isSplitAces && round.hands.count < rules.maximumHands && covered {
             actions.insert(.split)
         }
         // Late surrender: the first decision of an unsplit hand.
@@ -341,7 +343,7 @@ struct BlackjackEngine: Codable, Equatable {
 
         case .double:
             guard let card = shoe.draw() else { return nil }
-            bankroll -= round.hands[i].bet
+            bankroll -= BlackjackAmount(round.hands[i].bet)
             round.hands[i].bet *= 2
             round.hands[i].isDoubled = true
             round.hands[i].cards.append(card)
@@ -350,7 +352,7 @@ struct BlackjackEngine: Codable, Equatable {
 
         case .split:
             let hand = round.hands[i]
-            bankroll -= hand.bet
+            bankroll -= BlackjackAmount(hand.bet)
             let aces = hand.cards[0].isAce
             var first = BlackjackHand(bet: hand.bet)
             first.cards = [hand.cards[0]]
@@ -388,25 +390,26 @@ struct BlackjackEngine: Codable, Equatable {
         let dealerBlackjack = round.dealerHasBlackjack
         for i in round.hands.indices {
             let hand = round.hands[i]
-            let bet = hand.bet
+            let bet = BlackjackAmount(hand.bet)
             let result: BlackjackResult
-            let returned: Int
+            let returned: BlackjackAmount
             if hand.tookEvenMoney {
                 (result, returned) = (.evenMoney, bet * 2)
             } else if hand.isSurrendered {
-                (result, returned) = (.surrender, bet / 2)
+                (result, returned) = (.surrender, bet.half)
             } else if hand.isBust {
-                (result, returned) = (.bust, 0)
+                (result, returned) = (.bust, .zero)
             } else if hand.isBlackjack {
-                (result, returned) = dealerBlackjack ? (.push, bet) : (.blackjack, bet + bet * 3 / 2)
+                // Three to two, exactly: the bet back and one and a half times it.
+                (result, returned) = dealerBlackjack ? (.push, bet) : (.blackjack, bet + (bet * 3).half)
             } else if dealerBlackjack {
-                (result, returned) = (.lose, 0)
+                (result, returned) = (.lose, .zero)
             } else if dealer.isBust || hand.total.total > dealer.total {
                 (result, returned) = (.win, bet * 2)
             } else if hand.total.total == dealer.total {
                 (result, returned) = (.push, bet)
             } else {
-                (result, returned) = (.lose, 0)
+                (result, returned) = (.lose, .zero)
             }
             round.hands[i].result = result
             round.hands[i].returned = returned
@@ -444,9 +447,9 @@ struct BlackjackEngine: Codable, Equatable {
         house += round.chipsAtRisk
         for i in round.hands.indices where !round.hands[i].isSettled {
             round.hands[i].result = .lose
-            round.hands[i].returned = 0
+            round.hands[i].returned = .zero
         }
-        if round.insuranceReturned == nil { round.insuranceReturned = 0 }
+        if round.insuranceReturned == nil { round.insuranceReturned = .zero }
         shoe.discard(round.cardsOnTable)
         self.round = nil
     }
@@ -463,7 +466,7 @@ struct BlackjackEngine: Codable, Equatable {
 
     /// The player can no longer make the table minimum.
     var isBroke: Bool {
-        (phase == .betting || phase == .settled) && pendingBet == 0 && bankroll < rules.minimumBet
+        (phase == .betting || phase == .settled) && pendingBet == 0 && bankroll < BlackjackAmount(rules.minimumBet)
     }
 
     /// A fresh bankroll, between rounds.
@@ -471,8 +474,9 @@ struct BlackjackEngine: Codable, Equatable {
         if phase == .settled { collect() }
         guard phase == .betting else { return }
         clearBet()
-        funded += BlackjackRules.startingBankroll - bankroll
-        bankroll = BlackjackRules.startingBankroll
+        let fresh = BlackjackAmount(BlackjackRules.startingBankroll)
+        funded += fresh - bankroll
+        bankroll = fresh
     }
 
     // MARK: Screenshots and tests
@@ -494,36 +498,51 @@ struct BlackjackEngine: Codable, Equatable {
         func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
             ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
         }
+        // Every number is held to a range no table could leave — a
+        // hand-edited or damaged file must not be able to overflow a sum.
         rules = value(.rules, BlackjackRules())
-        bankroll = max(0, value(.bankroll, BlackjackRules.startingBankroll))
-        house = value(.house, 0)
-        pendingBet = max(0, value(.pendingBet, 0))
-        lastBet = max(0, value(.lastBet, 0))
+        let money = BlackjackAmount.zero...BlackjackAmount(Self.largestAmount)
+        bankroll = value(.bankroll, BlackjackAmount(BlackjackRules.startingBankroll)).clamped(to: money)
+        house = value(.house, BlackjackAmount.zero).clamped(to: -money.upperBound...money.upperBound)
+        pendingBet = max(0, min(rules.maximumBet, value(.pendingBet, 0)))
+        lastBet = max(0, min(rules.maximumBet, value(.lastBet, 0)))
         round = value(.round, nil as BlackjackRound?)
-        let fallbackShoe = BlackjackShoe(decks: rules.decks, seed: UInt64(truncatingIfNeeded: bankroll &* 7_919),
+        let fallbackShoe = BlackjackShoe(decks: rules.decks, seed: UInt64(truncatingIfNeeded: bankroll.halves &* 7_919),
                                          penetration: rules.penetration)
         shoe = value(.shoe, fallbackShoe)
-        funded = value(.funded, bankroll + pendingBet + house)
+        funded = value(.funded, bankroll + BlackjackAmount(pendingBet) + house)
+            .clamped(to: -money.upperBound * 10...money.upperBound * 10)
         repair(fallbackShoe: fallbackShoe)
     }
+
+    /// What a round dropped on restoring hands back: its stake — but never
+    /// more than the books say left the bankroll, since the round's own
+    /// figures may be the damaged part.
+    private func refund(_ round: BlackjackRound) -> BlackjackAmount {
+        let books = funded - bankroll - house - BlackjackAmount(pendingBet)
+        return max(.zero, min(round.chipsAtRisk, books))
+    }
+
+    /// No bankroll, house or funding past this is believed.
+    static let largestAmount = 100_000_000
 
     /// Makes a restored table whole: a round that could not have happened is
     /// refunded, a shoe that has lost or doubled a card is replaced, and the
     /// books are balanced.
     private mutating func repair(fallbackShoe: BlackjackShoe) {
-        if let round, !round.isPlausible {
-            bankroll += round.chipsAtRisk
+        if let round, !round.isPlausible(maximumBet: rules.maximumBet) {
+            bankroll += refund(round)
             self.round = nil
         }
         if shoe.decks != rules.decks || !isComposed {
             if let round {
-                bankroll += round.chipsAtRisk
+                bankroll += refund(round)
                 self.round = nil
             }
             shoe = fallbackShoe
         }
         if pendingBet > 0 && round != nil {
-            bankroll += pendingBet
+            bankroll += BlackjackAmount(pendingBet)
             pendingBet = 0
         }
         if !isBalanced { house = funded - bankroll - chipsInPlay }
