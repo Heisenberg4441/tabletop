@@ -10,7 +10,7 @@
 "%@ cleared the table and sank the eight." = "%@ очищает стол и забивает восьмёрку.";
 "%@ fouled on the eight." = "%@ фолит на восьмёрке.";
 "%@ foundation" = "Основание %@";
-"%@ has the %@ and starts" = "У игрока %@ %@ — он ходит первым";
+"%@ has the %@ and starts" = "%@: %@ — первый ход";
 "%@ is out" = "%@ выходит из игры";
 "%@ is the Durak" = "%@ — дурак";
 "%@ of %@" = "%@ %@";
@@ -20,7 +20,7 @@
 "%@ takes" = "%@ берёт";
 "%@ transfers to %@" = "%@ переводит на игрока %@";
 "%@ transfers to you" = "%@ переводит на вас";
-"%@ went out first." = "%@ вышел первым.";
+"%@ went out first." = "Первым вышел из игры: %@.";
 "%@ wins" = "Победа: %@";
 "%@ wins %@" = "%@ выигрывает %@";
 "%@ · %@" = "%@ · %@";
@@ -76,7 +76,7 @@
 "All-in %@" = "Олл-ин %@";
 "Anna" = "Анна";
 "Arcs" = "Дуги";
-"Attacking" = "Ходит";
+"Attacking" = "Атака";
 "Auto-Finish" = "Доиграть автоматически";
 "BLACKJACK PAYS 3 TO 2" = "БЛЭКДЖЕК ПЛАТИТ 3 К 2";
 "Back to %@. Statistics are kept." = "Снова %@. Статистика сохранится.";
@@ -160,7 +160,7 @@
 "Deck, %d card" = "Колода, %d карта";
 "Decks" = "Колоды";
 "Defend" = "Отбивайтесь";
-"Defending" = "Отбивается";
+"Defending" = "Защита";
 "Diamonds" = "бубён";
 "Difficulty" = "Сложность";
 "Dmitri" = "Дмитрий";
@@ -295,10 +295,10 @@
 "Open table" = "Группы не выбраны";
 "Opponents" = "Соперники";
 "Oscar" = "Оскар";
-"Out" = "Вышел";
+"Out" = "Вне игры";
 "Out first" = "Вышел первым";
 "Out of chips" = "Фишки закончились";
-"Out · %@" = "Выбыл · %@";
+"Out · %@" = "Вне игры · %@";
 "Pair" = "Пара";
 "Pair of %@" = "Пара: %@";
 "Pass" = "Пас";
@@ -408,7 +408,7 @@
 "Tabletop Help" = "Справка Tabletop";
 "Take" = "Беру";
 "Take Insurance" = "Застраховать";
-"Takes" = "Берёт";
+"Takes" = "«Беру»";
 "Ten" = "десятка";
 "Tens" = "десятки";
 "Texas Hold’em against the table" = "Техасский холдем против стола";
@@ -434,7 +434,7 @@
 "Tight-passive" = "Тайтово-пассивный";
 "Time played" = "Время в игре";
 "Timed Game" = "Игра на время";
-"To break" = "Разбивает";
+"To break" = "Первый удар";
 "Top Up to %@" = "Докупить до %@";
 "Top View" = "Вид сверху";
 "Top level" = "Максимальный уровень";
@@ -443,7 +443,7 @@
 "Tournaments played" = "Сыграно турниров";
 "Tournaments won" = "Выиграно турниров";
 "Transfer" = "Перевести";
-"Transferred to %@" = "Переведено на игрока %@";
+"Transferred to %@" = "Переведено: %@";
 "Trump" = "Козырь";
 "Trump %@" = "Козырь %@";
 "Trump: %@" = "Козырь: %@";
@@ -458,7 +458,7 @@
 "Variant" = "Вариант";
 "Vegas" = "Вегас";
 "View" = "Вид";
-"Waiting to play" = "Ждёт своего хода";
+"Waiting to play" = "Ожидание хода";
 "Waste" = "Сброс";
 "Weave" = "Плетение";
 "Welcome to Tabletop" = "Добро пожаловать в Tabletop";
@@ -489,16 +489,16 @@
 "You're out — you got rid of all your cards." = "Вы вышли — все карты сброшены.";
 "Your attack" = "Ваш ход";
 "Your bankroll and the shoe are not affected. This cannot be undone." = "Банкролл и шуз не изменятся. Это действие нельзя отменить.";
-"Your break" = "Ваш разбой";
+"Your break" = "Вы разбиваете";
 "Your turn" = "Ваш ход";
 "You’ll top up to %@ before the next hand" = "Перед следующей раздачей вы докупитесь до %@";
 "Zoom" = "Изменить масштаб";
 "dealer" = "дилер";
 "draw" = "оттяжка";
-"folded" = "сбросил";
+"folded" = "карты сброшены";
 "follow" = "накат";
 "left english" = "левый винт";
-"out" = "выбыл";
+"out" = "вне игры";
 "right english" = "правый винт";
 "their turn" = "ходит";
 "winner" = "победитель";
