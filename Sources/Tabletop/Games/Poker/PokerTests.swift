@@ -11,5 +11,7 @@ enum PokerTests {
     static func run(_ t: TestReporter) {
         t.section("Poker")
         t.check("the game introduces itself as poker", PokerGame.info.id == .poker)
+        PokerEngineTests.run(t)
+        PokerWorkerTests.run(t)
     }
 }
