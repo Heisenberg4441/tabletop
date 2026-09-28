@@ -51,24 +51,28 @@ struct PokerStats: Codable, Equatable, Sendable {
     }
 }
 
-/// The two files: the table between hands, and the record.
+/// The two files: the table, and the record.
+///
+/// The table is saved whole, a hand in progress included — its deck and all
+/// — and resumes exactly where it stood. Anything less would let a player
+/// quit a hand gone wrong and have the chips back, or quit after the flop
+/// and be dealt the same cards again knowing the board.
 enum PokerStorage {
 
     static var tableFile: String { Storage.fileName("table.json", for: .poker) }
     static var statsFile: String { Storage.fileName("stats.json", for: .poker) }
 
-    /// The saved table, if there is one worth resuming — a hand caught in
-    /// progress is given back to its players first, and anything that does
-    /// not add up is ignored.
+    /// The saved table, if there is one worth resuming — mid-hand or not.
+    /// Anything that does not add up is ignored.
     static func loadTable() -> PokerTable? {
         guard var table = Storage.load(PokerTable.self, from: tableFile) else { return nil }
-        table.abandonHandInProgress()
+        // A hand whose state does not hold together is given back to its
+        // players, rather than the whole table lost.
+        if !table.isConsistent && !table.isAtHandBoundary { table.abandonHandInProgress() }
         return table.isConsistent ? table : nil
     }
 
-    /// Saves `table` if it is between hands; a hand in progress is not saved.
     static func save(_ table: PokerTable) {
-        guard table.isAtHandBoundary else { return }
         Storage.save(table, to: tableFile)
     }
 

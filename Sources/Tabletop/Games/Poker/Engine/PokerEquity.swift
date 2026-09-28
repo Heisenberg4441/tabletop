@@ -17,12 +17,18 @@ import Foundation
 /// How the simulation narrows one opponent's cards to what their actions
 /// suggest. Rejection sampling: a dealt hand that does not fit is re-dealt,
 /// a few times at most, so the narrowing is light rather than absolute — a
-/// raiser *usually* has a good hand, not always.
+/// raiser *usually* has a good hand, not always. `PokerEquity.topRange(_:)`
+/// makes a strict one instead: a definite share of hands, re-dealt until one
+/// fits.
 struct PokerRangeFilter: Hashable, Sendable {
     /// Hands with a Chen score below this are kept only with `weakKeep`
-    /// probability.
+    /// probability…
     var minChen: Double = -10
     var weakKeep: Double = 1
+    /// …and hands below this one never.
+    var floorChen: Double = -100
+    /// Deals tried before one is taken whether it fits or not.
+    var attempts = 5
     /// After postflop action: hands that miss the board (no pair of their
     /// own, no flush draw) are kept with this probability…
     var airKeep: Double = 1
@@ -39,7 +45,7 @@ struct PokerRangeFilter: Hashable, Sendable {
         self.weakPairKeep = weakPairKeep
     }
 
-    var isAnyHand: Bool { weakKeep >= 1 && airKeep >= 1 && weakPairKeep >= 1 }
+    var isAnyHand: Bool { weakKeep >= 1 && airKeep >= 1 && weakPairKeep >= 1 && floorChen <= -50 }
 }
 
 enum PokerEquity {
@@ -64,6 +70,55 @@ enum PokerEquity {
     private static func chenIndex(_ r1: Int, _ r2: Int, _ suited: Bool) -> Int {
         (max(r1, r2) * 13 + min(r1, r2)) * 2 + (suited ? 1 : 0)
     }
+
+    /// The best `fraction` of all 1,326 starting hands by Chen score, as a
+    /// filter the simulation holds to: the top scores whole, the score at
+    /// the edge in the proportion that makes the share exact, nothing below.
+    static func topRange(_ fraction: Double) -> PokerRangeFilter {
+        let f = max(0.01, min(1, fraction))
+        guard f < 0.999 else { return .anyHand }
+        var above = 0.0
+        for (score, share) in chenLadder {
+            if above + share >= f {
+                let keep = (f - above) / share
+                var filter = PokerRangeFilter(minChen: score + 0.25, weakKeep: keep)
+                filter.floorChen = score
+                // Enough re-deals that a hand from outside almost never slips
+                // through, even for a range of a few per cent.
+                filter.attempts = Int(min(400, max(8, 8 / f)))
+                return filter
+            }
+            above += share
+        }
+        return .anyHand
+    }
+
+    /// The lowest Chen score among the best `fraction` of starting hands.
+    static func chenThreshold(top fraction: Double) -> Double {
+        var above = 0.0
+        for (score, share) in chenLadder {
+            above += share
+            if above >= fraction { return score }
+        }
+        return chenLadder.last?.score ?? -10
+    }
+
+    /// Every Chen score, best first, with the share of the 1,326 two-card
+    /// combinations that has it (6 of each pair, 4 suited, 12 off-suit).
+    private static let chenLadder: [(score: Double, share: Double)] = {
+        var weights: [Double: Double] = [:]
+        for hi in 0..<13 {
+            for lo in 0...hi {
+                if hi == lo {
+                    weights[chenScore(high: hi, low: lo, suited: false), default: 0] += 6
+                } else {
+                    weights[chenScore(high: hi, low: lo, suited: true), default: 0] += 4
+                    weights[chenScore(high: hi, low: lo, suited: false), default: 0] += 12
+                }
+            }
+        }
+        return weights.sorted { $0.key > $1.key }.map { ($0.key, $0.value / 1_326) }
+    }()
 
     private static let chenTable: [Double] = {
         var table = [Double](repeating: 0, count: 13 * 13 * 2)
@@ -210,7 +265,7 @@ enum PokerEquity {
                     live.swapAt(pos, i)
                     let j = pos + 1 + rng.next(upperBound: n - pos - 1)
                     live.swapAt(pos + 1, j)
-                    if filtersAreTrivial || attempt >= 5
+                    if filtersAreTrivial || attempt >= opponents[o].attempts
                         || accepts(opponents[o], live[pos], live[pos + 1], boardMask: boardMask,
                                    boardCount: board.count, boardTop: boardTop, rng: &rng) {
                         break
@@ -248,8 +303,9 @@ enum PokerEquity {
         let ra = Int(a % 13), rb = Int(b % 13)
         // Card codes put the ace at 0; poker ranks put it at 12.
         let pa = ra == 0 ? 12 : ra - 1, pb = rb == 0 ? 12 : rb - 1
-        if filter.weakKeep < 1 {
+        if filter.weakKeep < 1 || filter.floorChen > -50 {
             let score = chenTable[chenIndex(pa, pb, a / 13 == b / 13)]
+            if score < filter.floorChen { return false }
             if score < filter.minChen && unit(&rng) >= filter.weakKeep { return false }
         }
         guard boardCount >= 3, filter.airKeep < 1 || filter.weakPairKeep < 1 else { return true }

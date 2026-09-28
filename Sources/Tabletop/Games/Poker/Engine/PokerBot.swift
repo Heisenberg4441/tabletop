@@ -16,6 +16,13 @@
 //    and blurred by its difficulty, against thresholds that widen with
 //    position (fewer players behind), shrink with each raise in front, and
 //    move with the price. At 12 big blinds or fewer it only pushes or folds.
+//    Two spots are priced rather than scored, because there the price is
+//    everything: facing an all-in (or a raise for a third of its chips), and
+//    defending its blind against a raise. There it deals out its equity
+//    against the raiser's likely range — how wide someone shoves 10 big
+//    blinds deep, how wide they open from the button — widened for an
+//    opponent it has watched do it hand after hand (`PokerPlayer.habits`),
+//    and calls when the pot pays for it.
 //  * Postflop: Monte-Carlo equity against everyone still in, their cards
 //    narrowed a little by what they have done (a preflop raiser rarely holds
 //    seven-deuce; someone betting the flop rarely holds nothing), weighed
@@ -98,18 +105,26 @@ struct PokerBotSkill: Hashable, Sendable {
     var positionAware: Bool
     /// Bets big with strong hands and small with bluffs — a tell to exploit.
     var sizingTells: Bool
+    /// The share of its equity it expects to turn into chips after calling a
+    /// raise before the flop, for a hand of even equity: a weak hand out of
+    /// position realises less, a strong one more (see `blindDefence`), and a
+    /// weaker player less of either. What a blind defence is priced with.
+    var realization: Double
 
     static func of(_ difficulty: PokerDifficulty) -> PokerBotSkill {
         switch difficulty {
         case .casual:
             return PokerBotSkill(samples: 1_000, equityNoise: 0.09, chenNoise: 1.5, narrowing: 0.3,
-                                 stickiness: 0.05, bluffScale: 0.5, positionAware: false, sizingTells: true)
+                                 stickiness: 0.05, bluffScale: 0.5, positionAware: false, sizingTells: true,
+                                 realization: 0.66)
         case .standard:
             return PokerBotSkill(samples: 2_000, equityNoise: 0.04, chenNoise: 0.8, narrowing: 0.8,
-                                 stickiness: 0.02, bluffScale: 0.85, positionAware: true, sizingTells: false)
+                                 stickiness: 0.02, bluffScale: 0.85, positionAware: true, sizingTells: false,
+                                 realization: 0.72)
         case .sharp:
             return PokerBotSkill(samples: 3_000, equityNoise: 0, chenNoise: 0.35, narrowing: 1,
-                                 stickiness: 0, bluffScale: 1, positionAware: true, sizingTells: false)
+                                 stickiness: 0, bluffScale: 1, positionAware: true, sizingTells: false,
+                                 realization: 0.74)
         }
     }
 }
@@ -286,6 +301,19 @@ private struct PokerBotMind {
         if !skill.positionAware { openThreshold = 6.5 }
         if dealt == 2 { openThreshold = 4 } else if dealt == 3 { openThreshold -= 0.5 }
 
+        // Passive players need more to re-raise than their looseness says.
+        let threeBet = 11.5 - style.aggression * 2 + (1 - style.aggression) * 1.5
+        if raises > 0, let lastRaise = log.last(where: \.isAggressive), lastRaise.seat != seat {
+            // Calling would put a third of what this hand can be played for
+            // in the middle — or the raise is all in: a price, not a score.
+            let committing = table.players[lastRaise.seat].status == .allIn
+                || toCall * 3 >= Double(effectiveStack) || Double(effectiveStack) / bigBlind <= 12
+            if committing { return commitment(lastRaise: lastRaise) }
+            if raises == 1 && (isBigBlind || isSmallBlind) {
+                return blindDefence(strength: strength, lastRaise: lastRaise, threeBet: threeBet)
+            }
+        }
+
         if Double(effectiveStack) / bigBlind <= 12 {
             return shortStack(strength: strength, openThreshold: openThreshold, raises: raises)
         }
@@ -317,8 +345,6 @@ private struct PokerBotMind {
 
         let raiseSize = Double(o.currentBet) / bigBlind
         if raises == 1 {
-            // Passive players need more to re-raise than their looseness says.
-            let threeBet = 11.5 - style.aggression * 2 + (1 - style.aggression) * 1.5
             let callThreshold = max(openThreshold, 7) + 0.5 + max(0, raiseSize - 3) * 0.5
                 - (isBigBlind ? 1.5 : 0) - style.stickiness * 10
             if strength >= threeBet {
@@ -370,6 +396,130 @@ private struct PokerBotMind {
             return Choice(action: o.canBetOrRaise || o.callIsAllIn ? .allIn : .call, deliberation: 0.8)
         }
         return Choice(action: fold, deliberation: 0.55)
+    }
+
+    // MARK: Priced preflop decisions
+
+    /// The preflop action order: left of the big blind round to it
+    /// (heads-up, the button first).
+    var preflopOrder: [Int] {
+        let dealt = table.players.filter { $0.holeCards.count == 2 }.map(\.seat)
+        let fromButton = table.orderedFromButton(dealt)
+        guard let bb = table.bigBlindSeat, let i = fromButton.firstIndex(of: bb) else { return fromButton }
+        return Array(fromButton[(i + 1)...] + fromButton[...i])
+    }
+
+    /// The share of starting hands `player` makes `record`'s raise with.
+    ///
+    /// A starting point from the situation — all in `depth` big blinds deep,
+    /// roughly as wide as the push-or-fold charts (everything at five big
+    /// blinds, half the hands at ten, one in twelve at sixty); an open
+    /// raise, wide from the small blind and tighter with every player left
+    /// behind; tighter again over somebody else's raise — then blended with
+    /// what this player has actually been doing, the more so the better the
+    /// bot reads: a seat that has moved in six hands of six is shoving
+    /// nearly anything, one that never has, only its best.
+    func raiseRange(of player: PokerPlayer, record: PokerActionRecord) -> Double {
+        let shove = record.isAllIn || record.total * 3 >= max(1, player.stackAtHandStart)
+        let order = preflopOrder
+        let behind = order.firstIndex(of: record.seat).map { order.count - 1 - $0 } ?? 1
+        let before = table.handLog.prefix { $0 != record }.filter { $0.street == .preflop && $0.isAggressive }.count
+        var base: Double
+        if shove {
+            let depth = Double(min(player.stackAtHandStart, max(me.stackAtHandStart, me.chipsInPlay))) / bigBlind
+            base = min(1, 5.5 / max(1, depth))
+        } else {
+            base = 0.62
+        }
+        base *= pow(0.72, Double(max(0, behind - 1)))
+        if before > 0 { base *= 0.55 }
+        base = max(0.03, base)
+        let rate = player.habitRate(prior: base, weight: 4 / max(0.25, skill.narrowing)) { habit in
+            shove ? habit == .shoved : habit != .passive
+        }
+        return max(0.03, min(1, rate))
+    }
+
+    /// The opponents a call would be up against — the raiser, and whoever
+    /// has already called it — each with the range their action suggests,
+    /// and how many are still to have their say.
+    func opponentsOfRaise(_ lastRaise: PokerActionRecord) -> (ranges: [PokerRangeFilter], stillToAnswer: Int) {
+        let raiser = table.players[lastRaise.seat]
+        let share = raiseRange(of: raiser, record: lastRaise)
+        let after = table.handLog.drop { $0 != lastRaise }.dropFirst()
+        var ranges = [PokerEquity.topRange(share)]
+        var stillToAnswer = 0
+        for p in table.players where p.isInHand && p.seat != seat && p.seat != raiser.seat {
+            if after.contains(where: { $0.seat == p.seat && ($0.kind == .call || $0.isAggressive) }) {
+                // Called a raise they could have folded to: a strong hand.
+                ranges.append(PokerEquity.topRange(max(0.03, share * 0.6)))
+            } else {
+                stillToAnswer += 1
+            }
+        }
+        return (ranges, stillToAnswer)
+    }
+
+    /// Facing an all-in, or a raise that commits a third of what the hand is
+    /// played for: call (or move in over it) when the equity against the
+    /// raiser's range beats the price.
+    mutating func commitment(lastRaise: PokerActionRecord) -> Choice {
+        let toCall = Double(o.callAmount)
+        let (ranges, stillToAnswer) = opponentsOfRaise(lastRaise)
+        var need = toCall / max(1, Double(o.pot) + toCall)
+        // Somebody behind may wake up with a hand.
+        need += min(0.1, 0.025 * Double(stillToAnswer))
+        // A tournament life is worth more than its chips while there are
+        // places to be paid below the winner's.
+        let alive = table.players.filter { $0.stack > 0 || $0.isInHand }.count
+        if table.config.mode == .tournament && alive >= 3 && toCall >= Double(o.stack) * 0.8 { need += 0.03 }
+        need -= style.stickiness + skill.stickiness + style.looseness * 0.008
+        let samples = max(150, skill.samples / 3)
+        var equity = PokerEquity.estimate(hole: me.holeCards, board: [], opponents: ranges, samples: samples, rng: &rng)
+        equity = max(0, min(1, equity + noise(skill.equityNoise)))
+        let close = abs(equity - need) < 0.06
+        guard equity >= need else {
+            return Choice(action: fold, deliberation: close ? 0.85 : 0.45, equity: equity)
+        }
+        // A big raise with chips left behind it: calling most of the stack
+        // only to fold the rest later is the worst of both.
+        if table.players[lastRaise.seat].status != .allIn && o.canBetOrRaise && equity >= need + 0.06 {
+            return Choice(action: .allIn, deliberation: 0.8, equity: equity)
+        }
+        return Choice(action: callOrCommit, deliberation: close ? 0.9 : 0.6, equity: equity)
+    }
+
+    /// In a blind, facing one raise that is not for the stack: the blind is
+    /// already in, so the price is good — continue when the equity against
+    /// the raiser's range, discounted for playing the hand out of position
+    /// (`realization`), pays for the call. The best hands re-raise, and a
+    /// bot that notices somebody raising every hand re-raises them lighter.
+    mutating func blindDefence(strength: Double, lastRaise: PokerActionRecord, threeBet: Double) -> Choice {
+        if strength >= threeBet {
+            return Choice(action: aggressive(to: Double(o.currentBet) * 3.5), deliberation: 0.6)
+        }
+        let toCall = Double(o.callAmount)
+        let (ranges, stillToAnswer) = opponentsOfRaise(lastRaise)
+        let share = raiseRange(of: table.players[lastRaise.seat], record: lastRaise)
+        var need = toCall / max(1, Double(o.pot) + toCall)
+        need += 0.03 * Double(stillToAnswer)
+        // Its character, not its skill: a better player defends wider here,
+        // because it plays the flop better (`realization`).
+        need -= style.stickiness + style.looseness * 0.008
+        let samples = max(150, skill.samples / 4)
+        var equity = PokerEquity.estimate(hole: me.holeCards, board: [], opponents: ranges, samples: samples, rng: &rng)
+        equity = max(0, min(1, equity + noise(skill.equityNoise)))
+        if skill.positionAware && ranges.count == 1 && share >= 0.45 && equity >= 0.56 && roll(style.aggression * 0.6) {
+            return Choice(action: aggressive(to: Double(o.currentBet) * 3), deliberation: 0.6, equity: equity)
+        }
+        // Trash that flops little and plays the hand out of position keeps
+        // less of its equity than a hand that dominates: heads-up against a
+        // min-raise that folds roughly the worst quarter of hands.
+        let realized = equity * max(0.4, min(1, skill.realization + 0.9 * (equity - 0.5)))
+        if realized >= need {
+            return Choice(action: callOrCommit, deliberation: 0.45, equity: equity)
+        }
+        return Choice(action: fold, deliberation: realized >= need - 0.04 ? 0.5 : 0.25, equity: equity)
     }
 
     // MARK: Postflop
@@ -490,7 +640,9 @@ private struct PokerBotMind {
             filter.minChen = 10
             filter.weakKeep = 0.1
         } else if preflopRaises == 1 {
-            filter.minChen = 7.5
+            // A raise from somebody who raises everything says less.
+            let share = opponent.habitRate(prior: 0.18, weight: 4 / max(0.25, skill.narrowing)) { $0 != .passive }
+            filter.minChen = min(7.5, PokerEquity.chenThreshold(top: share))
             filter.weakKeep = 0.2
         } else if preflopCalls > 0 {
             filter.minChen = 5

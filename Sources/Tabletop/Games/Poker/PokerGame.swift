@@ -2,7 +2,7 @@
 //  PokerGame.swift
 //  No-limit Texas Hold'em against computer players, as one game in the
 //  collection: the table, the New Game card, the menu, the record, and
-//  saving between hands.
+//  saving — a hand in progress included.
 //
 //  The pieces, and who owns what:
 //
@@ -39,7 +39,9 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
     }
 
     static var howToPlay: String {
-        NSLocalizedString("""
+        // The amounts as the table writes them (grouped the same way as the
+        // stacks on the plates).
+        String(format: NSLocalizedString("""
         No-limit Texas Hold’em against one to five computer players. Each \
         player gets two cards face down; five more are dealt face up in the \
         middle for everyone to share — three on the flop, one on the turn, \
@@ -51,15 +53,17 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         • Fold, check or call, or bet and raise any amount up to everything \
         you have in front of you. The best hand at the showdown takes the pot \
         — unless everyone else folded first.
-        • Tournament: everyone starts with 1,500 and the blinds go up every \
+        • Tournament: everyone starts with %1$@ and the blinds go up every \
         eight hands, until one player has every chip. Cash game: blinds \
-        5/10, and you can top up to 1,000 between hands.
+        %2$@/%3$@, and you can top up to %4$@ between hands.
 
         Keyboard: F folds, C checks or calls, R moves to the bet amount (← \
         and → change it, ⇧ for bigger steps), Return bets or raises — or \
         deals the next hand — and Escape puts the amount back. ⌘N starts a \
         new game.
-        """, comment: "poker help text")
+        """, comment: "poker help text; the tournament stack, the cash blinds and the cash stack"),
+               Chips.format(PokerTableConfig.tournamentStack), Chips.format(PokerTableConfig.cashBlinds.smallBlind),
+               Chips.format(PokerTableConfig.cashBlinds.bigBlind), Chips.format(PokerTableConfig.cashStack))
     }
 
     // MARK: State
@@ -73,6 +77,9 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
     private var optionsCard: OptionsCard?
     /// The player's finish in the tournament at the table has been counted.
     private var tournamentRecorded = false
+    /// The table on screen is a game the player chose or resumed — not the
+    /// still life behind the first New Game card, which is never saved.
+    private var hasChosenGame = false
     /// In front, in a key and visible window.
     private var isActive = false
     private var preferencesObserver: NSObjectProtocol?
@@ -84,7 +91,8 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
     required init?(coder: NSCoder) { fatalError("built in code") }
 
     deinit {
-        if let preferencesObserver { NotificationCenter.default.removeObserver(preferencesObserver) }
+        // From the centre it was added to: the workspace's, not the default.
+        if let preferencesObserver { NSWorkspace.shared.notificationCenter.removeObserver(preferencesObserver) }
     }
 
     override func loadView() {
@@ -116,16 +124,27 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         if let saved = PokerStorage.loadTable() {
             resume(saved)
         } else {
-            flow.start(PokerTable(config: preferences.config, seed: 1), dealNow: false, frozen: true)
+            // Something to look at behind the first New Game card; never
+            // dealt, never saved.
+            flow.start(PokerTable(config: preferences.config, seed: Self.freshSeed()), dealNow: false, frozen: true)
             presentOptions(allowCancel: false, animated: false)
         }
     }
 
     var preferredFirstResponder: NSView? { tableView }
 
+    /// Picks up the saved table where it stood — between hands, or in the
+    /// middle of one, the player's turn waiting for them.
     private func resume(_ table: PokerTable) {
+        hasChosenGame = true
         tournamentRecorded = table.humanPlace != nil
         flow.start(table, dealNow: false)
+    }
+
+    /// A new deck order for a new game: seeded for the harness, so tests and
+    /// screenshots repeat, and random for the player.
+    private static func freshSeed() -> UInt64 {
+        TabletopEnvironment.isHarness ? 0x5EED_0001 : UInt64.random(in: 1...UInt64.max)
     }
 
     // MARK: Lifecycle
@@ -158,9 +177,10 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         if run { tableView.scheduler.resume() } else { tableView.scheduler.suspend() }
     }
 
+    /// The whole table, a hand in progress included, so a relaunch comes
+    /// back to exactly this moment.
     private func save() {
-        // Between hands only: a hand half played cannot be animated back, so
-        // the last hand boundary is what a relaunch resumes.
+        guard hasChosenGame else { return }
         PokerStorage.save(flow.table)
     }
 
@@ -184,8 +204,11 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         ]
         let card = OptionsCard(
             title: NSLocalizedString("New Game", comment: "poker options card title"),
-            subtitle: NSLocalizedString("No-limit Texas Hold’em. A tournament starts everyone on 1,500 with the blinds rising every eight hands; a cash game plays 5/10 for as long as you like.",
-                                        comment: "poker options card subtitle"),
+            subtitle: String(format: NSLocalizedString("Tournament: everyone starts with %1$@, and the blinds rise every eight hands. Cash game: blinds %2$@/%3$@.",
+                                                       comment: "poker options card subtitle; the starting stack, then the cash blinds"),
+                             Chips.format(PokerTableConfig.tournamentStack),
+                             Chips.format(PokerTableConfig.cashBlinds.smallBlind),
+                             Chips.format(PokerTableConfig.cashBlinds.bigBlind)),
             rows: rows,
             startTitle: NSLocalizedString("Deal", comment: "poker options card: start the game"))
         card.onStart = { [weak self] chosen in
@@ -203,9 +226,17 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         }
         if allowCancel {
             card.onCancel = { [weak self] in
-                self?.optionsCard = nil
-                self?.panel.isSuppressed = false
-                self?.syncScheduler()
+                guard let self else { return }
+                self.optionsCard = nil
+                self.panel.isSuppressed = false
+                self.syncScheduler()
+                // Back to a finished tournament whose banner had gone: say
+                // the result again, or there is nothing on the table to press.
+                if self.flow.stage == .finished && Banner.banners(in: self.tableView).isEmpty,
+                   let place = self.flow.table.humanPlace ?? (self.flow.table.phase == .gameOver ? 1 : nil) {
+                    self.showTournamentResult(place: place)
+                }
+                self.view.window?.makeFirstResponder(self.tableView)
             }
         }
         optionsCard = card
@@ -219,9 +250,9 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
         Banner.dismissAll(in: tableView)
         Toast.hide(in: tableView, animated: false)
         tableView.isQuiet = false
-        let seed = TabletopEnvironment.isHarness ? 0x5EED_0001 : UInt64.random(in: 1...UInt64.max)
-        let table = PokerTable(config: config, seed: seed)
+        let table = PokerTable(config: config, seed: Self.freshSeed())
         tournamentRecorded = false
+        hasChosenGame = true
         // Saved before the first deal, so a relaunch comes back to this game
         // rather than the one it replaced.
         PokerStorage.save(table)
@@ -246,6 +277,11 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
     func flowDidChangeState(_ flow: PokerFlow) {
         panel.update(animated: true)
         publishStatus()
+        // The keyboard lost to the window (a control that had it went away)
+        // comes back to the table, where the game's keys are heard.
+        if optionsCard?.isPresented != true, let window = view.window, window.firstResponder === window {
+            window.makeFirstResponder(tableView)
+        }
         // VoiceOver hears when the table is waiting for the player.
         let humanTurn = flow.stage == .humanTurn
         if humanTurn && !wasHumanTurn {
@@ -272,6 +308,10 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
 
     func flow(_ flow: PokerFlow, tournamentOverWithPlace place: Int) {
         showTournamentResult(place: place)
+    }
+
+    func flowReachedCheckpoint(_ flow: PokerFlow) {
+        save()
     }
 
     private func showTournamentResult(place: Int) {
@@ -438,6 +478,10 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
             item.state = preferences.showsHandStrength ? .on : .off
             return true
         case #selector(newGameSameSettings(_:)):
+            return !cardUp
+        case #selector(newGame(_:)):
+            // The card on screen is the New Game card already — and one with
+            // no Cancel must not be swapped for one that has it.
             return !cardUp
         default:
             return true

@@ -132,7 +132,8 @@ extension PokerTableView {
                 let blind = record.kind == .smallBlind || record.kind == .bigBlind
                 at(t) { view in
                     if record.added > 0 {
-                        ChipFlight.fly(amount: record.added, from: view.seatPoint(seat), to: view.betPoint(seat),
+                        ChipFlight.fly(amount: record.added, from: view.seatPoint(seat),
+                                       to: view.betPoint(seat, amount: record.total),
                                        in: view.tableLayer, chipDiameter: betChip, duration: flight)
                     }
                     view.step(record.kind == .fold ? move : 0) { s in
@@ -142,7 +143,10 @@ extension PokerTableView {
                         if record.kind == .fold {
                             s.seats[seat].status = .folded
                             s.seats[seat].cards = []
-                            if s.seats[seat].isHuman { s.humanHand = nil }
+                            if s.seats[seat].isHuman {
+                                s.humanHand = nil
+                                s.humanHandShort = nil
+                            }
                         }
                         if !blind { s.seats[seat].caption = record.caption }
                         s.toAct = nil
@@ -195,6 +199,7 @@ extension PokerTableView {
                     view.step(0) { s in
                         guard let human = table.humanSeat, s.seats.indices.contains(human) else { return }
                         s.humanHand = PokerScene.handDescription(s.seats[human].cards, board: s.board)
+                        s.humanHandShort = PokerScene.handName(s.seats[human].cards, board: s.board)
                     }
                 }
                 t += 0.15
@@ -270,6 +275,7 @@ extension PokerTableView {
                     view.step(0) { s in
                         guard let human = table.humanSeat, s.seats.indices.contains(human) else { return }
                         s.humanHand = PokerScene.handDescription(s.seats[human].cards, board: s.board)
+                        s.humanHandShort = PokerScene.handName(s.seats[human].cards, board: s.board)
                     }
                 }
                 t += runout ? pace.runoutPause : 0.1
@@ -331,6 +337,7 @@ extension PokerTableView {
                     view.step(Motion.standard) { s in
                         s.result = settled.result
                         s.humanHand = settled.humanHand
+                        s.humanHandShort = settled.humanHandShort
                         s.humanHandIsWinner = settled.humanHandIsWinner
                     }
                 }
@@ -385,6 +392,7 @@ extension PokerTableView {
             s.dimsOthers = false
             s.result = nil
             s.humanHand = nil
+            s.humanHandShort = nil
             s.toAct = nil
             s.thinking = nil
             s.button = nil

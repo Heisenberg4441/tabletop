@@ -88,6 +88,11 @@ struct PokerPlayer: Hashable, Codable, Sendable {
     /// rebuys and top-ups. The chips on the table always add up to the sum.
     var boughtIn: Int
     var stackAtHandStart: Int
+    /// The last hands this seat acted in before the flop, oldest first, at
+    /// most `habitMemory` of them. Public knowledge — anyone at the table
+    /// could have watched — and what the bots read an opponent by.
+    var habits: [PokerPreflopHabit] = []
+    static let habitMemory = 12
 
     var isInHand: Bool { status == .active || status == .allIn }
     var canAct: Bool { status == .active }
@@ -121,6 +126,15 @@ struct PokerPlayer: Hashable, Codable, Sendable {
         place = c.pokerDecode(.place, nil)
         boughtIn = c.pokerDecode(.boughtIn, stack)
         stackAtHandStart = c.pokerDecode(.stackAtHandStart, stack)
+        habits = Array(c.pokerDecode(.habits, [PokerPreflopHabit]()).suffix(Self.habitMemory))
+    }
+
+    /// How often, lately, this seat's preflop action was one `matching`:
+    /// blended with `prior` as if `weight` more hands had gone that way, so
+    /// two shoves in two hands read as a tendency, not a certainty.
+    func habitRate(prior: Double, weight: Double, matching: (PokerPreflopHabit) -> Bool) -> Double {
+        let hits = Double(habits.filter(matching).count)
+        return (hits + prior * weight) / (Double(habits.count) + weight)
     }
 }
 
@@ -537,6 +551,29 @@ struct PokerTable: Codable, Equatable, Sendable {
 
     // MARK: The machinery
 
+    /// Adds this hand's preflop action to every seat's habits — for the
+    /// seats that had a decision to make (a big blind given a walk had none).
+    private mutating func rememberPreflopHabits() {
+        for i in players.indices {
+            let mine = handLog.filter { $0.seat == i && $0.street == .preflop
+                && $0.kind != .smallBlind && $0.kind != .bigBlind }
+            guard !mine.isEmpty else { continue }
+            let start = max(1, players[i].stackAtHandStart)
+            let habit: PokerPreflopHabit
+            if mine.contains(where: { $0.isAggressive && ($0.isAllIn || $0.total * 3 >= start) }) {
+                habit = .shoved
+            } else if mine.contains(where: \.isAggressive) {
+                habit = .raised
+            } else {
+                habit = .passive
+            }
+            players[i].habits.append(habit)
+            if players[i].habits.count > PokerPlayer.habitMemory {
+                players[i].habits.removeFirst(players[i].habits.count - PokerPlayer.habitMemory)
+            }
+        }
+    }
+
     private var handSeed: UInt64 {
         seed &+ UInt64(handNumber) &* 0x9E37_79B9_7F4A_7C15
     }
@@ -752,6 +789,7 @@ struct PokerTable: Codable, Equatable, Sendable {
                                        netChange: players.map { $0.stack - $0.stackAtHandStart })
         lastSummary = summary
         events.append(.handEnded(summary))
+        rememberPreflopHabits()
 
         let busted = players.filter { $0.status != .out && $0.stack == 0 }
         for p in busted { players[p.seat].status = .out }
@@ -788,23 +826,27 @@ struct PokerTable: Codable, Equatable, Sendable {
 extension PokerTable {
 
     /// A table that can be played from: two to six seats numbered in order,
-    /// no negative stacks, every chip accounted for. A save that fails this
-    /// is thrown away rather than resumed.
+    /// no negative stacks, every chip accounted for — and mid-hand, somebody
+    /// able to act whose turn it is. A save that fails this is thrown away
+    /// rather than resumed.
     var isConsistent: Bool {
         guard (2...6).contains(players.count),
               players.enumerated().allSatisfy({ $0.offset == $0.element.seat }),
               players.allSatisfy({ $0.stack >= 0 && $0.bet >= 0 && $0.committed >= 0 }),
               chipsOnTable == chipsBoughtIn else { return false }
+        if phase == .betting {
+            guard let seat = toAct, players.indices.contains(seat), players[seat].canAct else { return false }
+        }
         return true
     }
 
-    /// Only a table between hands is worth saving: the UI saves at hand
-    /// boundaries, and a half-played hand cannot be animated back. A table
-    /// loaded from disk that is not at one should `abandonHandInProgress()`.
+    /// No hand is being played.
     var isAtHandBoundary: Bool { phase == .betweenHands || phase == .gameOver }
 
-    /// Undoes a hand caught in progress — a save from a crash, say — by giving
-    /// every seat back what it put in, so the table resumes between hands.
+    /// Undoes a hand that cannot go on — a save whose deck is missing — by
+    /// giving every seat back what it put in, so the table resumes between
+    /// hands. The hand's number stays used: the next hand is shuffled from
+    /// the next number, so the same cards never come round twice.
     mutating func abandonHandInProgress() {
         guard phase == .betting || phase == .streetComplete else { return }
         for i in players.indices {
@@ -816,7 +858,7 @@ extension PokerTable {
         pots = []
         board = []
         toAct = nil
-        handNumber = max(0, handNumber - 1)
+        handsAreRevealed = false
         phase = .betweenHands
     }
 
@@ -910,6 +952,12 @@ extension PokerTable {
     /// Puts the button on `seat`, so the next hand moves it one live seat on.
     mutating func setButtonForTesting(_ seat: Int) {
         button = seat
+    }
+
+    /// Gives `seat` a history the bots have watched.
+    mutating func setHabitsForTesting(_ habits: [PokerPreflopHabit], seat: Int) {
+        guard players.indices.contains(seat) else { return }
+        players[seat].habits = Array(habits.suffix(PokerPlayer.habitMemory))
     }
 
     /// Replaces the hole cards dealt this hand and stacks the deck so the

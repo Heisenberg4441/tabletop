@@ -42,7 +42,7 @@ enum PokerStreet: Int, Codable, Sendable, Comparable, CaseIterable {
 /// What the table is waiting for. The UI's loop is a switch on this.
 enum PokerPhase: String, Codable, Sendable {
     /// No hand in progress: before the first hand, or after the last one was
-    /// paid. Call `startHand()`. The only phase that is saved to disk.
+    /// paid. Call `startHand()`.
     case betweenHands
     /// `toAct` must act: `apply(_:)` with one of `options()`'s actions.
     case betting
@@ -211,6 +211,19 @@ enum PokerAction: Hashable, Codable, Sendable {
     /// Everything. A call, a bet or a raise depending on the stack; always
     /// legal when it is a call, legal as a bet/raise when raising is.
     case allIn
+}
+
+/// What a seat did before the flop in one hand it had a say in — the bots'
+/// memory of how an opponent plays (`PokerPlayer.habits`). Somebody who
+/// moves all in every hand is not holding aces every hand, and somebody who
+/// raises every button is not always strong.
+enum PokerPreflopHabit: String, Codable, Sendable {
+    /// Folded, checked or called.
+    case passive
+    /// Opened or re-raised, for less than a third of the stack.
+    case raised
+    /// All in, or a raise of a third of the stack or more.
+    case shoved
 }
 
 /// One thing a player did, as the table records it — including posting a

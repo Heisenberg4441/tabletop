@@ -157,8 +157,10 @@ final class PokerTableView: CardTableView {
 
         for (seat, s) in newScene.seats.enumerated() {
             let poses = layout.holePoses(seat: seat, revealed: s.revealed)
+            let inward = layout.spots[safe: seat]?.inward
             for (k, card) in s.cards.prefix(2).enumerated() {
-                put(Self.holeID(seat: seat, card: k), card: card, pose: lifted(poses[k], card: card), faceUp: s.faceUp)
+                put(Self.holeID(seat: seat, card: k), card: card,
+                    pose: lifted(poses[k], card: card, towards: inward, human: seat == 0), faceUp: s.faceUp)
             }
         }
         for (i, card) in newScene.board.prefix(5).enumerated() {
@@ -181,16 +183,25 @@ final class PokerTableView: CardTableView {
         updateChips(layout, animated: duration > 0)
         updateBadges(layout, old: old, animated: duration > 0)
         updateDealer(layout, animated: duration > 0 && old.button != newScene.button && old.button != nil)
-        resultPill.show(isQuiet ? nil : newScene.result, at: layout.result, animated: duration > 0)
+        resultPill.show(isQuiet ? nil : newScene.result, at: layout.result, maxWidth: layout.resultMaxWidth,
+                        animated: duration > 0)
     }
 
-    /// A winning card rises out of its place a little, along its own "up".
-    private func lifted(_ pose: CardPose, card: Card) -> CardPose {
+    /// A winning card rises out of its place a little: a board card along
+    /// its own "up", a player's card towards the middle of the table — for
+    /// the seat across the table that is down, away from its plate, where
+    /// "up" would have lifted the cards onto it.
+    private func lifted(_ pose: CardPose, card: Card, towards inward: CGVector? = nil, human: Bool = false) -> CardPose {
         guard scene.highlight.contains(card) else { return pose }
         var p = pose
-        let distance = cardSize.height * pose.scale * 0.13
-        p.position.x += sin(pose.rotation) * distance
-        p.position.y -= cos(pose.rotation) * distance
+        let distance = cardSize.height * pose.scale * (human ? PokerLayout.humanWinningLift : PokerLayout.winningLift)
+        if let inward {
+            p.position.x += inward.dx * distance
+            p.position.y += inward.dy * distance
+        } else {
+            p.position.x += sin(pose.rotation) * distance
+            p.position.y -= cos(pose.rotation) * distance
+        }
         p.z += 200
         return p
     }
@@ -210,8 +221,8 @@ final class PokerTableView: CardTableView {
         }
         betStacks = scene.seats.map { _ in
             let stack = ChipStackLayer()
-            stack.maximumStacks = 4
-            stack.maximumChipsPerStack = 8
+            stack.maximumStacks = PokerLayout.betStacks
+            stack.maximumChipsPerStack = Self.betChipsPerStack
             addTableLayer(stack, z: -10)
             return stack
         }
@@ -272,17 +283,19 @@ final class PokerTableView: CardTableView {
             stack.setAmount(s.bet, animated: animated)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            stack.position = spot.bet
+            stack.position = s.bet > 0 ? betPoint(i, amount: s.bet) : spot.bet
             stack.isHidden = s.bet == 0
             CATransaction.commit()
         }
 
-        // One stack per pot, labelled underneath.
+        // One stack per pot, labelled underneath, in a row no wider than the
+        // board: more pots than fit get fewer stacks each, then shorter
+        // words, then just their amounts (see `potRow`).
         let amounts = scene.pots
         while potStacks.count < amounts.count {
             let stack = ChipStackLayer()
             stack.showsLabel = false
-            stack.maximumStacks = 5
+            stack.maximumChipsPerStack = PokerLayout.potChipsPerStack
             addTableLayer(stack, z: -10)
             potStacks.append(stack)
             let label = PokerCapsuleLabelLayer()
@@ -290,16 +303,16 @@ final class PokerTableView: CardTableView {
             potLabels.append(label)
         }
         let labelSize = max(10.5, layout.potChipDiameter * 0.40)
+        let row = Self.potRow(amounts, chip: layout.potChipDiameter, fontSize: labelSize, width: layout.potBand.width)
         for (i, stack) in potStacks.enumerated() {
             let amount = amounts[safe: i] ?? 0
             stack.chipDiameter = layout.potChipDiameter
+            stack.maximumStacks = row.stacks
             stack.setAmount(amount, animated: animated)
-            potLabels[i].set(Self.potTitle(index: i, count: amounts.count, amount: amount), fontSize: labelSize)
+            potLabels[i].set(Self.potTitle(index: i, count: amounts.count, amount: amount, words: row.words),
+                             fontSize: labelSize)
         }
-        let widths = potStacks.indices.map { i -> CGFloat in
-            max(potStacks[i].bounds.width, potLabels[i].bounds.width)
-        }
-        let points = layout.potPositions(count: amounts.count, widths: widths)
+        let points = layout.potPositions(widths: row.widths, gap: row.gap)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, stack) in potStacks.enumerated() {
@@ -313,8 +326,51 @@ final class PokerTableView: CardTableView {
         CATransaction.commit()
     }
 
-    static func potTitle(index: Int, count: Int, amount: Int) -> String {
+    /// How the row of pots is drawn: stacks per pot, how the labels read,
+    /// the gap, and each pot's width (a pot already paid keeps its place, so
+    /// the others do not shuffle while the chips go out).
+    struct PotRow: Equatable {
+        var stacks: Int
+        var words: PotWords
+        var gap: CGFloat
+        var widths: [CGFloat]
+    }
+
+    enum PotWords { case full, short, amount }
+
+    /// The roomiest way of drawing `amounts` as a row that fits in `width`.
+    static func potRow(_ amounts: [Int], chip d: CGFloat, fontSize: CGFloat, width: CGFloat) -> PotRow {
+        let ladder: [(stacks: Int, words: PotWords, gap: CGFloat)] = [
+            (amounts.count <= 1 ? 5 : 3, .full, 0.9), (2, .full, 0.5), (2, .short, 0.4), (1, .amount, 0.35),
+        ]
+        var row = PotRow(stacks: 1, words: .amount, gap: d * 0.35, widths: [])
+        for step in ladder {
+            let widths = amounts.enumerated().map { i, amount -> CGFloat in
+                let stacks = ChipStackLayer.stacks(for: amount, maximumPerStack: PokerLayout.potChipsPerStack,
+                                                   maximumStacks: step.stacks).count
+                let chips = CGFloat(max(1, stacks)) * d * 1.1 - d * 0.1 + d * 0.5
+                let label = PokerCapsuleLabelLayer.width(of: potTitle(index: i, count: amounts.count, amount: amount,
+                                                                      words: step.words), fontSize: fontSize)
+                return max(chips, label)
+            }
+            row = PotRow(stacks: step.stacks, words: step.words, gap: (d * step.gap).rounded(), widths: widths)
+            let total = widths.reduce(0, +) + row.gap * CGFloat(max(0, widths.count - 1))
+            if total <= width { break }
+        }
+        return row
+    }
+
+    static func potTitle(index: Int, count: Int, amount: Int, words: PotWords = .full) -> String {
         let chips = Chips.format(amount)
+        switch words {
+        case .full: break
+        case .amount: return chips
+        case .short:
+            if count <= 1 { break }
+            return index == 0
+                ? String(format: NSLocalizedString("Main %@", comment: "poker: the main pot's label when many pots crowd the row"), chips)
+                : String(format: NSLocalizedString("Side %@", comment: "poker: a side pot's label when many pots crowd the row"), chips)
+        }
         if count <= 1 {
             return String(format: NSLocalizedString("Pot %@", comment: "poker: the pot's label, e.g. Pot 1,240"), chips)
         }
@@ -337,7 +393,7 @@ final class PokerTableView: CardTableView {
     // MARK: The dealer button
 
     private func updateDealer(_ layout: PokerLayout, animated: Bool) {
-        let d = max(18, (layout.betChipDiameter * 0.86).rounded())
+        let d = layout.dealerDiameter
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         guard let button = scene.button, let spot = layout.spots[safe: button] else {
             dealerPuck.isHidden = true
@@ -429,9 +485,12 @@ final class PokerTableView: CardTableView {
         for key in handBadges.keys where key >= scene.seats.count {
             handBadges.removeValue(forKey: key)?.hide(animated: false)
         }
-        // The player's hand, beside their cards.
+        // The player's hand, beside their cards — in full when there is the
+        // room before the next seat's cards, by its kind when not.
         var pill: [Int: TableBadge] = handPill.map { [0: $0] } ?? [:]
-        sync(&pill, key: 0, text: showsHandStrength && !isQuiet ? scene.humanHand : nil, tone: scene.humanHandIsWinner ? .win : .neutral,
+        var words = scene.humanHand
+        if let full = words, PokerLayout.badgeWidth(full) > layout.handPillMaxWidth { words = scene.humanHandShort ?? full }
+        sync(&pill, key: 0, text: showsHandStrength && !isQuiet ? words : nil, tone: scene.humanHandIsWinner ? .win : .neutral,
              at: layout.handPill, anchor: .trailing, animated: animated)
         handPill = pill[0]
     }
@@ -480,7 +539,7 @@ final class PokerTableView: CardTableView {
             seat.frame.size = SeatView.stackedSize
             seat.centerAvatar(at: spot.avatar)
         }
-        resultPill.move(to: layout.result)
+        resultPill.move(to: layout.result, maxWidth: layout.resultMaxWidth)
         // A card resized with the table takes its veil with it.
         for id in dimmed {
             guard let layer = existingSprite(id),
@@ -500,11 +559,41 @@ final class PokerTableView: CardTableView {
         layoutModel?.spots[safe: seat]?.avatar ?? geometry.center
     }
 
-    func betPoint(_ seat: Int) -> CGPoint {
-        layoutModel?.spots[safe: seat]?.bet ?? geometry.center
+    /// Where `seat`'s bet of `amount` (the one on the table, by default)
+    /// stands: in the place the layout keeps for the largest bet, drawn over
+    /// towards the seat's cards by however much narrower this one is — so a
+    /// single chip sits by the cards rather than out in the middle of the
+    /// room kept for four stacks, and never leaves that room.
+    func betPoint(_ seat: Int, amount: Int? = nil) -> CGPoint {
+        guard let layout = layoutModel, let spot = layout.spots[safe: seat] else { return geometry.center }
+        let chips = amount ?? scene.seats[safe: seat]?.bet ?? 0
+        let d = layout.betChipDiameter
+        let stacks = CGFloat(max(1, ChipStackLayer.stacks(for: chips, maximumPerStack: Self.betChipsPerStack,
+                                                         maximumStacks: PokerLayout.betStacks).count))
+        let font = Typography.number(max(10, d * 0.34), weight: .semibold)
+        let label = ceil((Chips.format(chips) as NSString).size(withAttributes: [.font: font]).width + d * 0.55)
+        // Measured as the layout measures the largest: chips, and a sliver of
+        // their shadow either side.
+        let half = max(stacks * d + (stacks - 1) * d * 0.1, label) / 2 + d * 0.06
+        let room = max(0, PokerLayout.betRect(at: .zero, chip: d).width / 2 - half)
+        let cards = TableLayout.bounds(of: layout.holePoses(seat: seat, revealed: false), cardSize: cardSize).midX
+        let dx = max(-room, min(room, cards - spot.bet.x))
+        return CGPoint(x: (spot.bet.x + dx).rounded(), y: spot.bet.y)
     }
 
+    /// A bet's stacks: a denomination past this many starts another.
+    static let betChipsPerStack = 8
+
     func seatView(_ seat: Int) -> SeatView? { seats[safe: seat] }
+
+    // The layers and badges on show, for `footprints()`.
+    var betStackLayers: [ChipStackLayer] { betStacks }
+    var potStackLayers: [ChipStackLayer] { potStacks }
+    var potLabelLayers: [PokerCapsuleLabelLayer] { potLabels }
+    var captionBadgeViews: [Int: TableBadge] { captionBadges }
+    var handBadgeViews: [Int: TableBadge] { handBadges }
+    var handPillView: TableBadge? { handPill }
+    var dealerPuckLayer: CALayer? { dealerPuck }
 
     // MARK: Keys and accessibility
 
@@ -525,6 +614,91 @@ final class PokerTableView: CardTableView {
                           name, layer.card.accessibilityName)
         }
         return String(format: NSLocalizedString("%@: face-down card", comment: "accessibility: a player's hidden card"), name)
+    }
+}
+
+// MARK: - Footprints
+
+/// One thing on the table as the player sees it — for the checks that
+/// nothing lies on anything else.
+struct PokerFootprint: Equatable {
+    enum Kind: String { case seat, cards, board, bet, pot, potLabel, caption, handName, handPill, dealer, result }
+    var kind: Kind
+    /// The seat it belongs to (the pot's index, for a pot and its label).
+    var owner: Int?
+    var rect: CGRect
+}
+
+extension PokerTableView {
+
+    /// Everything on show, each as the rectangle it covers: a card's turned
+    /// corners, a chip stack's chips and amount without the room left for
+    /// its shadow, a badge's capsule.
+    func footprints() -> [PokerFootprint] {
+        var out: [PokerFootprint] = []
+        for i in scene.seats.indices {
+            guard let seat = seatView(i), !seat.isHidden else { continue }
+            // The ring round the avatar, and the plate under it — not the
+            // empty corners of the view's frame beside the avatar.
+            let f = seat.frame
+            let ring = SeatView.avatarSize / 2 + 4.5
+            let center = CGPoint(x: f.midX, y: f.minY + 4 + SeatView.avatarSize / 2)
+            out.append(PokerFootprint(kind: .seat, owner: i,
+                                      rect: CGRect(x: center.x - ring, y: center.y - ring, width: ring * 2, height: ring * 2)))
+            let plateTop = center.y + SeatView.avatarSize / 2 - 8
+            out.append(PokerFootprint(kind: .seat, owner: i,
+                                      rect: CGRect(x: f.minX, y: plateTop, width: f.width, height: f.maxY - plateTop)))
+        }
+        for id in spriteIDs.sorted() {
+            guard let pose = pose(of: id), !pose.isHidden, let layer = existingSprite(id), !layer.isHidden else { continue }
+            let box = TableLayout.boundingBox(of: pose, cardSize: cardSize)
+            if id >= Self.boardID(0) {
+                out.append(PokerFootprint(kind: .board, owner: nil, rect: box))
+            } else {
+                out.append(PokerFootprint(kind: .cards, owner: (id - 10) / 2, rect: box))
+            }
+        }
+        func chips(_ layer: ChipStackLayer) -> CGRect {
+            let room = layer.chipDiameter * 0.2
+            let f = layer.frame
+            return CGRect(x: f.minX + room, y: f.minY + room, width: f.width - room * 2,
+                          height: f.height - room - (layer.showsLabel ? 0 : room))
+        }
+        for (i, stack) in betStackLayers.enumerated() where !stack.isHidden {
+            out.append(PokerFootprint(kind: .bet, owner: i, rect: chips(stack)))
+        }
+        for (i, stack) in potStackLayers.enumerated() where !stack.isHidden {
+            out.append(PokerFootprint(kind: .pot, owner: i, rect: chips(stack)))
+        }
+        for (i, label) in potLabelLayers.enumerated() where !label.isHidden {
+            out.append(PokerFootprint(kind: .potLabel, owner: i, rect: label.frame))
+        }
+        for (seat, badge) in captionBadgeViews { out.append(PokerFootprint(kind: .caption, owner: seat, rect: badge.frame)) }
+        for (seat, badge) in handBadgeViews { out.append(PokerFootprint(kind: .handName, owner: seat, rect: badge.frame)) }
+        if let pill = handPillView { out.append(PokerFootprint(kind: .handPill, owner: 0, rect: pill.frame)) }
+        if let puck = dealerPuckLayer, !puck.isHidden {
+            out.append(PokerFootprint(kind: .dealer, owner: scene.button, rect: puck.frame.insetBy(dx: 3, dy: 3)))
+        }
+        if !resultPill.isHidden { out.append(PokerFootprint(kind: .result, owner: nil, rect: resultPill.frame)) }
+        return out
+    }
+
+    /// The pairs of footprints that lie on each other, described.
+    static func overlaps(in footprints: [PokerFootprint], tolerance: CGFloat = 1.5) -> [String] {
+        var problems: [String] = []
+        for (i, a) in footprints.enumerated() {
+            for b in footprints[(i + 1)...] {
+                // A hand's own two cards fan over each other; a pot's label
+                // sits under its chips.
+                if a.kind == b.kind && [.cards, .board, .seat].contains(a.kind) && a.owner == b.owner { continue }
+                if Set([a.kind, b.kind]) == [.pot, .potLabel] && a.owner == b.owner { continue }
+                let x = a.rect.intersection(b.rect)
+                guard !x.isNull, x.width > tolerance, x.height > tolerance else { continue }
+                func name(_ f: PokerFootprint) -> String { f.kind.rawValue + (f.owner.map { " \($0)" } ?? "") }
+                problems.append("\(name(a)) on \(name(b))")
+            }
+        }
+        return problems
     }
 }
 

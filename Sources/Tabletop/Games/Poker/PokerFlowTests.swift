@@ -135,7 +135,9 @@ enum PokerFlowTests {
     static func layout(_ t: TestReporter) {
         t.section("Poker — the table at every size")
         let sizes = [CGSize(width: 960, height: 640), CGSize(width: 1200, height: 800), CGSize(width: 1440, height: 900),
-                     CGSize(width: 1800, height: 1000), CGSize(width: 1000, height: 900), CGSize(width: 2200, height: 1200)]
+                     CGSize(width: 1728, height: 1080), CGSize(width: 1000, height: 900), CGSize(width: 2200, height: 1200)]
+        // The seats themselves: in the window, clear of the bar and of each
+        // other.
         var problems: [String] = []
         for size in sizes {
             let view = PokerTableView()
@@ -147,8 +149,6 @@ enum PokerFlowTests {
                 let tag = "\(Int(size.width))×\(Int(size.height)) \(count)p"
                 let top = TabletopChrome.minimumTopInset
                 let barTop = size.height - view.actionBar.reservedHeight + Spacing.m
-                let board = TableLayout.bounds(of: l.board, cardSize: l.cardSize)
-                let lifted = board.insetBy(dx: 0, dy: -l.cardSize.height * l.boardScale * 0.14)
                 for (i, spot) in l.spots.enumerated() {
                     if spot.seatFrame.minY < top - 0.5 { problems.append("\(tag) seat \(i) in the window strip") }
                     if spot.seatFrame.maxY > barTop + 0.5 { problems.append("\(tag) seat \(i) under the bar") }
@@ -156,39 +156,78 @@ enum PokerFlowTests {
                     for (j, other) in l.spots.enumerated() where j > i && spot.seatFrame.intersects(other.seatFrame) {
                         problems.append("\(tag) seats \(i) and \(j) overlap")
                     }
-                    for revealed in [false, true] {
-                        let cards = TableLayout.bounds(of: l.holePoses(seat: i, revealed: revealed), cardSize: l.cardSize)
-                        if cards.intersects(lifted) { problems.append("\(tag) seat \(i)'s cards on the board") }
-                        for (j, other) in l.spots.enumerated() where j != i && cards.intersects(other.seatFrame) {
-                            problems.append("\(tag) seat \(i)'s cards under seat \(j)")
-                        }
-                        if i > 0 && cards.insetBy(dx: 2, dy: 2).intersects(spot.seatFrame.insetBy(dx: 0, dy: 0))
-                            && cards.insetBy(dx: 2, dy: 2).intersects(avatarBox(spot)) {
-                            problems.append("\(tag) seat \(i)'s cards on its own avatar")
-                        }
-                    }
-                    // A bet's chips and label.
-                    let chip = l.betChipDiameter
-                    let bet = CGRect(x: spot.bet.x - chip * 1.2, y: spot.bet.y - chip * 0.9, width: chip * 2.4, height: chip * 1.6)
-                    if bet.intersects(lifted) { problems.append("\(tag) seat \(i)'s bet on the board") }
-                    for (j, other) in l.spots.enumerated() where j != i {
-                        let theirs = TableLayout.bounds(of: l.holePoses(seat: j, revealed: false), cardSize: l.cardSize)
-                        if bet.intersects(theirs) { problems.append("\(tag) seat \(i)'s bet on seat \(j)'s cards") }
-                        if bet.intersects(other.seatFrame) { problems.append("\(tag) seat \(i)'s bet under seat \(j)") }
-                    }
                     if !l.geometry.contains(spot.bet, inset: l.geometry.railWidth * 1.2) {
                         problems.append("\(tag) seat \(i)'s bet off the cloth")
                     }
+                    if i > 0 && spot.revealedScale < l.opponentScale - 0.001 {
+                        problems.append("\(tag) seat \(i)'s shown cards smaller than its hidden ones")
+                    }
                 }
-                let human = TableLayout.bounds(of: l.holePoses(seat: 0, revealed: false), cardSize: l.cardSize)
-                if human.intersects(board) { problems.append("\(tag) the player's cards on the board") }
-                if l.pot.y >= board.minY { problems.append("\(tag) the pot below the board") }
-                if l.result.y + 27 > lifted.minY + 1 { problems.append("\(tag) the result on the lifted cards") }
+                if l.pot.y >= TableLayout.bounds(of: l.board, cardSize: l.cardSize).minY {
+                    problems.append("\(tag) the pot below the board")
+                }
             }
         }
-        t.check("at six window sizes and two to six players, nothing lies on anything else \(problems.prefix(6))",
+        t.check("at six window sizes and two to six players, the seats sit in the window, clear of each other \(problems.prefix(6))",
                 problems.isEmpty)
-        if !problems.isEmpty { t.info("\(problems.count) layout problems") }
+
+        // Then everything on show, as drawn: the most crowded moment of each
+        // kind for every player count — with the button at every seat at
+        // once — and every screenshot scene: nothing on anything else.
+        let started = ProcessInfo.processInfo.systemUptime
+        var crowded: [String] = []
+        var scenes: [String] = []
+        let names = PokerGame.screenshotScenarios.filter { $0 != "new-game" }
+        for size in sizes {
+            let view = PokerTableView()
+            view.frame = CGRect(origin: .zero, size: size)
+            let tag = "\(Int(size.width))×\(Int(size.height))"
+            func check(_ scene: PokerScene, _ what: String, everyButton: Bool = false, into list: inout [String]) {
+                view.show(scene)
+                view.layoutSubtreeIfNeeded()
+                var prints = view.footprints()
+                if everyButton, let l = view.layoutModel {
+                    prints += l.spots.enumerated().map { i, spot in
+                        PokerFootprint(kind: .dealer, owner: i,
+                                       rect: PokerLayout.dealerRect(at: spot.dealer, diameter: l.dealerDiameter).insetBy(dx: 2, dy: 2))
+                    }
+                }
+                for problem in PokerTableView.overlaps(in: prints) { list.append("\(tag) \(what): \(problem)") }
+                let barTop = size.height - view.actionBar.reservedHeight
+                for f in prints where f.kind != .seat && (f.rect.maxY > barTop || f.rect.minY < view.playBounds.minY
+                                                         || f.rect.minX < 0 || f.rect.maxX > size.width) {
+                    list.append("\(tag) \(what): \(f.kind.rawValue) \(f.owner ?? -1) off the table")
+                }
+            }
+            for count in 2...6 {
+                for moment in CrowdedMoment.allCases {
+                    check(Self.crowdedScene(seats: count, moment: moment), "\(count)p \(moment)", everyButton: true,
+                          into: &crowded)
+                }
+            }
+            for name in names {
+                guard let table = PokerGame.scenarioTable(name) else { continue }
+                let settled = PokerScene(table: table)
+                check(settled, name, into: &scenes)
+                // A showdown a beat before the pot is pushed: the hands and
+                // their names up, the pots still in the middle.
+                if let summary = PokerScene.displayedSummary(table), !summary.shown.isEmpty {
+                    var before = settled
+                    before.pots = summary.awards.map(\.amount)
+                    before.result = nil
+                    before.highlight = []
+                    before.dimsOthers = false
+                    for i in before.seats.indices { before.seats[i].isWinner = false }
+                    check(before, name + " before the push", into: &scenes)
+                }
+            }
+        }
+        t.check("the most crowded moments at every count, the button at every seat: nothing on anything else \(crowded.prefix(6))",
+                crowded.isEmpty)
+        if !crowded.isEmpty { t.info("\(crowded.count) overlaps in crowded scenes") }
+        t.check("every screenshot scene at six sizes: nothing on anything else \(scenes.prefix(6))", scenes.isEmpty)
+        if !scenes.isEmpty { t.info("\(scenes.count) overlaps in the screenshot scenes") }
+        t.info(String(format: "%.1f s", ProcessInfo.processInfo.systemUptime - started))
 
         // Seats go round clockwise, evenly, with the player at the bottom.
         let view = PokerTableView()
@@ -201,7 +240,68 @@ enum PokerFlowTests {
                     abs(a[0].x - 600) < 1 && a[1].x < a[0].x && a[1].y > a[2].y && a[3].y < a[2].y + 1
                         && abs(a[3].x - 600) < 1 && a[4].x > 600 && a[5].y > a[4].y)
             t.check("…balanced left to right", abs((a[1].x + a[5].x) / 2 - 600) < 1.5 && abs((a[2].x + a[4].x) / 2 - 600) < 1.5)
+            // The seat across the table bets beside its cards, not onto the
+            // pot; the two seats at an end push their chips apart.
+            let across = l.spots[3]
+            t.check("the seat across the table bets beside its cards, clear of the pot",
+                    !PokerLayout.betRect(at: across.bet, chip: l.betChipDiameter).intersects(l.potBand))
+            let upper = PokerLayout.betRect(at: l.spots[2].bet, chip: l.betChipDiameter)
+            let lower = PokerLayout.betRect(at: l.spots[1].bet, chip: l.betChipDiameter)
+            t.check("…and the two seats at the left end keep their bets apart (\(Int(lower.minY - upper.maxY)) pt)",
+                    lower.minY - upper.maxY >= 12)
         }
+    }
+
+    enum CrowdedMoment: String, CaseIterable, CustomStringConvertible {
+        /// Everyone's largest bet and caption out, the pots in the middle.
+        case betting
+        /// Everyone all in: the hands turned up over the pots.
+        case runout
+        /// The hands' names up, the pots not yet pushed.
+        case beforePush
+        /// The pot gone, the result in its place.
+        case result
+
+        var description: String { rawValue }
+    }
+
+    /// A table as full as it gets at `moment`: every seat in, with two cards,
+    /// a bet of four stacks, the longest caption and hand name, several pots
+    /// and the longest result — words the layout was not told. (No button:
+    /// the check puts one at every seat.)
+    static func crowdedScene(seats count: Int, moment: CrowdedMoment) -> PokerScene {
+        var s = scene(seats: count)
+        var deck = Card.full
+        s.button = nil
+        let shown = moment != .betting
+        for i in s.seats.indices {
+            s.seats[i].cards = [deck.removeFirst(), deck.removeFirst()]
+            s.seats[i].faceUp = s.seats[i].isHuman || shown
+            s.seats[i].revealed = shown && !s.seats[i].isHuman
+            if moment == .betting {
+                s.seats[i].bet = 1_480 + i * 1_111
+                s.seats[i].caption = String(format: NSLocalizedString("Raise %@", comment: "poker caption: raised to, e.g. Raise 120"),
+                                            Chips.format(12_345 + i))
+            }
+            if (moment == .beforePush || moment == .result) && !s.seats[i].isHuman {
+                s.seats[i].handName = NSLocalizedString("Three of a Kind", comment: "poker hand category")
+            }
+        }
+        s.board = Array(deck.prefix(moment == .betting || moment == .runout ? 3 : 5))
+        switch moment {
+        case .betting: s.pots = [4_440, 1_480]
+        case .runout, .beforePush: s.pots = [8_880, 4_440, 2_220]
+        case .result:
+            // Every card among the winners, so every card is lifted.
+            s.highlight = Set(s.seats.flatMap(\.cards) + s.board)
+            s.dimsOthers = true
+            s.result = PokerResultText(title: String(format: NSLocalizedString("Split pot of %@", comment: "poker banner: a pot split three or more ways"),
+                                                     Chips.format(12_345)),
+                                       subtitle: "Full House, Queens over Sevens", shortSubtitle: "Full House", humanWon: false)
+        }
+        s.humanHand = "Full House, Queens over Sevens"
+        s.humanHandShort = NSLocalizedString("Full House", comment: "poker hand category")
+        return s
     }
 
     private static func avatarBox(_ spot: PokerSeatSpot) -> CGRect {
@@ -487,6 +587,14 @@ enum PokerFlowTests {
         t.check("the first time, the New Game card is up and there is no Cancel",
                 game.optionsCardForTesting?.isPresented == true && game.optionsCardForTesting?.onCancel == nil)
         t.check("…and the action bar stands down behind it", game.panelForTesting.mode == .hidden)
+        t.check("⌘N is off while that card is up — it is the New Game card, and one without Cancel",
+                !game.validateMenuItem(NSMenuItem(title: "", action: #selector(PokerGame.newGame(_:)), keyEquivalent: "n")))
+        // Leaving before choosing: the still life behind the card is nobody's
+        // game, so nothing is saved and the next launch asks again.
+        game.gameWillResignActive()
+        game.prepareToQuit()
+        t.check("leaving before choosing saves no table, so the next launch asks again", PokerStorage.loadTable() == nil)
+        Storage.remove(PokerPreferences.fileName)
 
         // The player's turn, from the preflop scene.
         game.prepareForScreenshot(scenario: "preflop")
@@ -513,6 +621,30 @@ enum PokerFlowTests {
         panel.bar.button(for: "fold")?.performPress()
         t.check("the Fold button folds", flow.table.players[0].status == .folded)
 
+        // The keyboard: R hands it to the slider; acting hides the slider and
+        // hands it back to the table, where R, the arrows and Escape are
+        // heard — rather than stranding it on the window.
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        game.prepareForScreenshot(scenario: "preflop")
+        panel.focusBet()
+        let onSlider = (window.firstResponder as? NSView)?.isDescendant(of: panel.bet) == true
+        panel.bar.button(for: "passive")?.performPress()
+        t.check("R gives the slider the keyboard, and acting gives it back to the table",
+                onSlider && flow.table.players[0].hasActed && window.firstResponder === view)
+        window.contentView = nil
+        view.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
+
+        // Checking is free: no Fold on the bar, and F folds nothing.
+        game.prepareForScreenshot(scenario: "long-hand")
+        t.check("when checking is free the bar has no Fold: Check · Bet (\(panel.bar.actions.map(\.id)))",
+                flow.table.options()?.canCheck == true && panel.bar.actions.map(\.id) == ["passive", "aggressive"]
+                    && !panel.bar.actions.contains { $0.keyEquivalent == "f" })
+        // Everyone else all in: no turn can come, so nothing to tick in advance.
+        game.prepareForScreenshot(scenario: "big-bets")
+        t.check("with everyone else all in, no Check/Fold to tick", panel.mode == .hidden)
+
         // Between hands.
         game.prepareForScreenshot(scenario: "showdown")
         t.check("between hands the bar offers Deal Next Hand on Return",
@@ -538,6 +670,11 @@ enum PokerFlowTests {
                 flow.stage == .finished && PokerStorage.loadStats().tournamentsPlayed == 1
                     && Banner.banners(in: view).count == 1)
         t.check("…the table quiet under it", view.isQuiet && view.resultPill.isHidden)
+        if let last = PokerGame.scenarioTable("tournament-end"), let ordinary = PokerGame.scenarioTable("showdown") {
+            t.check("the hand that ends the tournament stays on the table a while before the banner; others do not wait",
+                    PokerFlow.finalHold(after: last, pace: PokerPace()) >= 2.6
+                        && PokerFlow.finalHold(after: ordinary, pace: PokerPace()) == 0)
+        }
         let rows = PokerStatisticsWindow.rows(PokerStorage.loadStats())
         t.check("the statistics sheet has its eight rows", rows.count == 8)
 
@@ -546,6 +683,20 @@ enum PokerFlowTests {
         _ = resumed.tableViewForTesting
         t.check("a new session resumes the saved table, not a New Game card",
                 resumed.flowForTesting.table == PokerStorage.loadTable() && resumed.optionsCardForTesting == nil)
+        Banner.dismissAll(in: view)
+
+        // Quitting in the middle of a hand: saved as it stands, deck and all,
+        // and picked up there — the same cards, the same chips in, the
+        // player's turn — not the chips given back and the hand dealt again.
+        flow.autopilot = false
+        game.newGameSameSettings(nil)
+        let midHand = flow.table
+        game.prepareToQuit()
+        let again = PokerGame()
+        _ = again.tableViewForTesting
+        t.check("quitting mid-hand and coming back finds that hand where it stood, the player to act",
+                flow.stage == .humanTurn && midHand.phase == .betting && again.flowForTesting.table == midHand
+                    && again.flowForTesting.stage == .humanTurn)
         Banner.dismissAll(in: view)
 
         // Preferences survive a damaged file.

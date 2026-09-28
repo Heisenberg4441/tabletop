@@ -7,33 +7,41 @@
 //  WHY NOT A BANNER. The kit's `Banner` is the result of a hand in the middle
 //  of the table — and the middle of a poker table is the board, whose five
 //  winning cards are lifted and lit at exactly that moment. A banner there
-//  would hide the very thing it announces. So the hand's result is a smaller
-//  glass card of the same material and type, in the place the pot has just
-//  left, over the board rather than on it. (The tournament's end, which has
-//  nothing on the board to show, is a real `Banner`.)
+//  would hide the very thing it announces. So the hand's result is a
+//  one-line glass capsule of the same material and type, in the place the
+//  pot has just left, over the board rather than on it. (The tournament's
+//  end, which has nothing on the board to show, is a real `Banner`.)
 //
 
 import AppKit
 import QuartzCore
 
-/// "Anna wins 1,240" over "Flush, Ace high", in glass, over the board.
+/// "Anna wins 1,240 — Flush, Ace high": one line in a glass capsule, over
+/// the board. One line, because the room between the board and the seat
+/// across the table is one line high at the smallest window; when the whole
+/// line would reach a shown hand, the hand is named by its kind alone
+/// ("Flush"), and failing that the winner alone is said.
 final class PokerResultPill: NSView {
 
-    private let panel = GlassPanel(cornerRadius: 16)
-    private let titleLabel = Typography.label("", font: Typography.title2)
-    private let subtitleLabel = Typography.label("", font: Typography.callout, color: Palette.textSecondary)
+    private let panel = GlassPanel(capsule: true)
+    private let label = Typography.label("", font: PokerResultPill.titleFont)
     private(set) var text: PokerResultText?
+    /// The line on show, as chosen for the room there is.
+    private(set) var shownLine = ""
     private var anchor: CGPoint = .zero
+    private var maxWidth: CGFloat = .greatestFiniteMagnitude
+
+    private static let titleFont = NSFont.systemFont(ofSize: 15, weight: .semibold)
+    private static let handFont = NSFont.systemFont(ofSize: 15, weight: .regular)
+    private static let padding: CGFloat = 20
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         panel.autoresizingMask = [.width, .height]
         addSubview(panel)
-        titleLabel.alignment = .center
-        subtitleLabel.alignment = .center
-        panel.contentView.addSubview(titleLabel)
-        panel.contentView.addSubview(subtitleLabel)
+        label.alignment = .center
+        panel.contentView.addSubview(label)
         isHidden = true
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -46,9 +54,11 @@ final class PokerResultPill: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }      // the table keeps its clicks
 
-    /// Shows `text` centred on `point`, or hides the pill for nil.
-    func show(_ text: PokerResultText?, at point: CGPoint, animated: Bool) {
+    /// Shows `text` centred on `point`, no wider than `maxWidth`, or hides
+    /// the pill for nil.
+    func show(_ text: PokerResultText?, at point: CGPoint, maxWidth: CGFloat, animated: Bool) {
         anchor = point
+        self.maxWidth = maxWidth
         guard let text else {
             guard self.text != nil else { return }
             self.text = nil
@@ -64,10 +74,6 @@ final class PokerResultPill: NSView {
         }
         let changed = text != self.text
         self.text = text
-        titleLabel.stringValue = text.title
-        titleLabel.textColor = text.humanWon ? Palette.accentSoft : Palette.textPrimary
-        subtitleLabel.stringValue = text.subtitle
-        subtitleLabel.isHidden = text.subtitle.isEmpty
         setAccessibilityLabel([text.title, text.subtitle].filter { !$0.isEmpty }.joined(separator: ", "))
         place()
         if changed || isHidden {
@@ -80,16 +86,46 @@ final class PokerResultPill: NSView {
     }
 
     /// Re-centres the pill — from the table's `layoutTable()`.
-    func move(to point: CGPoint) {
+    func move(to point: CGPoint, maxWidth: CGFloat) {
         anchor = point
-        place()
+        self.maxWidth = maxWidth
+        if text != nil { place() }
+    }
+
+    /// The winner in the title's weight (gold when it is the player), the
+    /// hand after a dash in the lighter one.
+    private func line(_ text: PokerResultText, hand: String) -> NSAttributedString {
+        let titleColor = text.humanWon ? Palette.accentSoft : Palette.textPrimary
+        let line = NSMutableAttributedString(string: text.title,
+                                             attributes: Typography.attributes(Self.titleFont, titleColor, alignment: .center))
+        if !hand.isEmpty {
+            line.append(NSAttributedString(string: " — " + hand,
+                                           attributes: Typography.attributes(Self.handFont, Palette.textSecondary,
+                                                                             alignment: .center)))
+        }
+        return line
     }
 
     private func place() {
-        let titleSize = titleLabel.intrinsicContentSize
-        let subtitleSize = subtitleLabel.isHidden ? .zero : subtitleLabel.intrinsicContentSize
-        let width = ceil(max(200, max(titleSize.width, subtitleSize.width) + 44))
-        let height = ceil(titleSize.height + (subtitleLabel.isHidden ? 0 : subtitleSize.height + 1) + 20)
+        guard let text else { return }
+        // The longest that fits: the whole hand, its kind, or nothing.
+        var hands = [text.subtitle]
+        if !text.shortSubtitle.isEmpty && text.shortSubtitle != text.subtitle { hands.append(text.shortSubtitle) }
+        if !text.subtitle.isEmpty { hands.append("") }
+        var chosen = line(text, hand: "")
+        var chosenWidth: CGFloat = 0
+        for hand in hands {
+            let candidate = line(text, hand: hand)
+            label.attributedStringValue = candidate
+            let width = Typography.fittingWidth(label) + Self.padding * 2
+            chosen = candidate
+            chosenWidth = width
+            if width <= maxWidth { break }
+        }
+        label.attributedStringValue = chosen
+        shownLine = chosen.string
+        let width = ceil(max(160, min(chosenWidth, max(160, maxWidth))))
+        let height = PokerLayout.resultHeight
         frame = CGRect(x: (anchor.x - width / 2).rounded(), y: (anchor.y - height / 2).rounded(),
                        width: width, height: height)
         needsLayout = true
@@ -98,11 +134,9 @@ final class PokerResultPill: NSView {
     override func layout() {
         super.layout()
         panel.frame = bounds
-        let titleHeight = titleLabel.intrinsicContentSize.height
-        let subtitleHeight = subtitleLabel.isHidden ? 0 : subtitleLabel.intrinsicContentSize.height
-        let top = ((bounds.height - titleHeight - (subtitleLabel.isHidden ? 0 : subtitleHeight + 1)) / 2).rounded()
-        titleLabel.frame = CGRect(x: 12, y: top, width: bounds.width - 24, height: titleHeight)
-        subtitleLabel.frame = CGRect(x: 12, y: top + titleHeight + 1, width: bounds.width - 24, height: subtitleHeight)
+        let height = label.intrinsicContentSize.height
+        label.frame = CGRect(x: Self.padding - 4, y: ((bounds.height - height) / 2).rounded(),
+                             width: bounds.width - (Self.padding - 4) * 2, height: height)
     }
 }
 
@@ -142,6 +176,13 @@ final class PokerCapsuleLabelLayer: CALayer {
 
     override var contentsScale: CGFloat {
         didSet { if contentsScale != oldValue, !text.isEmpty { redraw() } }
+    }
+
+    /// How wide the capsule saying `text` at `fontSize` is — for laying out
+    /// a row before it is drawn.
+    static func width(of text: String, fontSize: CGFloat) -> CGFloat {
+        let font = Typography.number(fontSize, weight: .semibold)
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width + fontSize * 1.6)
     }
 
     private func redraw() {

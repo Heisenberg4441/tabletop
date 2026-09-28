@@ -70,8 +70,15 @@ protocol PokerFlowDelegate: AnyObject {
     /// record, and for saving.
     func flow(_ flow: PokerFlow, didFinishHand summary: PokerHandSummary)
     /// The tournament is over for the player — shown once the last hand has
-    /// played out. Place 1 is a win.
+    /// played out and been read. Place 1 is a win.
     func flow(_ flow: PokerFlow, tournamentOverWithPlace place: Int)
+    /// The table has moved on in a way a relaunch must not undo — a new deal,
+    /// the player's own action — so it should be saved now.
+    func flowReachedCheckpoint(_ flow: PokerFlow)
+}
+
+extension PokerFlowDelegate {
+    func flowReachedCheckpoint(_ flow: PokerFlow) {}
 }
 
 /// Something the player asked for before their turn came.
@@ -210,7 +217,9 @@ final class PokerFlow {
     @discardableResult
     func act(_ action: PokerAction) -> Bool {
         guard stage == .humanTurn, table.isHumanToAct, table.isLegal(action) else { return false }
-        return perform(action)
+        let done = perform(action)
+        if done { delegate?.flowReachedCheckpoint(self) }
+        return done
     }
 
     /// Deals the next hand now, rather than after the pause.
@@ -234,6 +243,9 @@ final class PokerFlow {
             proceed(autoDeal: false)
             return
         }
+        // Saved with its deck the moment it is dealt: quitting now and coming
+        // back finds these same cards mid-hand, not a fresh deal of them.
+        delegate?.flowReachedCheckpoint(self)
         handsDealt += 1
         stage = .playing
         delegate?.flowDidChangeState(self)
@@ -345,7 +357,20 @@ final class PokerFlow {
         for case .handEnded(let summary) in events {
             delegate?.flow(self, didFinishHand: summary)
         }
-        later(duration) { [weak self] in self?.proceed() }
+        let hold = scheduler.isImmediate ? 0 : Self.finalHold(after: table, pace: pace)
+        later(duration + hold) { [weak self] in self?.proceed() }
+    }
+
+    /// How long the hand just paid stays on the table before the flow moves
+    /// on, beyond its own choreography: nothing, usually — the next deal
+    /// waits the result's hold anyway — but the hand that decides the
+    /// tournament for the player (their last, or the one that wins it) is
+    /// followed by the banner, which clears the table; so it stays long
+    /// enough for its result to be read first.
+    static func finalHold(after table: PokerTable, pace: PokerPace) -> TimeInterval {
+        guard table.isAtHandBoundary else { return 0 }
+        let decided = table.phase == .gameOver || (table.config.mode == .tournament && table.humanPlace != nil)
+        return decided ? max(2.6, pace.resultHold) : 0
     }
 
     private func finish(place: Int) {

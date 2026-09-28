@@ -62,18 +62,24 @@ struct PokerScene: Equatable {
     /// The hand's result in the pot's place: "Anna wins 1,240" and the hand
     /// that won it.
     var result: PokerResultText?
-    /// The player's own best hand so far, for the pill by their cards.
+    /// The player's own best hand so far, for the pill by their cards —
+    /// in full ("Two Pair, Kings and Sevens"), and as just its kind ("Two
+    /// Pair") for when the full words would not fit beside the cards.
     var humanHand: String?
+    var humanHandShort: String?
     var humanHandIsWinner: Bool
 
     static let empty = PokerScene(seats: [], board: [], pots: [], button: nil, toAct: nil, thinking: nil,
                                   highlight: [], dimsOthers: false, result: nil, humanHand: nil,
-                                  humanHandIsWinner: false)
+                                  humanHandShort: nil, humanHandIsWinner: false)
 }
 
 struct PokerResultText: Equatable {
     var title: String
+    /// The winning hand in full, and as just its kind — the shorter one when
+    /// the full line would reach a shown hand.
     var subtitle: String
+    var shortSubtitle: String = ""
     /// The player took (part of) the pot.
     var humanWon: Bool
 }
@@ -130,7 +136,8 @@ extension PokerScene {
             let headline = summary.headline(names: names, humanSeat: table.humanSeat)
             let humanWon = table.humanSeat.map { (winnings[$0] ?? 0) > 0 } ?? false
             if !headline.title.isEmpty {
-                result = PokerResultText(title: headline.title, subtitle: headline.subtitle, humanWon: humanWon)
+                result = PokerResultText(title: headline.title, subtitle: headline.subtitle,
+                                         shortSubtitle: Self.featuredAward(summary)?.hand?.name ?? "", humanWon: humanWon)
             }
             if let award = Self.featuredAward(summary), let hand = award.hand {
                 highlight = Set(hand.cards)
@@ -143,6 +150,7 @@ extension PokerScene {
         }
         if let human = table.humanSeat, seats.indices.contains(human), seats[human].cards.count == 2 {
             humanHand = Self.handDescription(seats[human].cards, board: table.board)
+            humanHandShort = Self.handName(seats[human].cards, board: table.board)
             humanHandIsWinner = summary != nil && (winnings[human] ?? 0) > 0
         }
     }
@@ -169,6 +177,14 @@ extension PokerScene {
         let featured = featuredAward(summary)
         let others = summary.awards.filter { $0 != featured }.sorted { $0.potIndex > $1.potIndex }
         return others + (featured.map { [$0] } ?? [])
+    }
+
+    /// Just the kind of hand after the flop ("Two Pair"); before it, the
+    /// same words as `handDescription`, which are short already.
+    static func handName(_ hole: [Card], board: [Card]) -> String? {
+        guard hole.count == 2 else { return nil }
+        if board.count >= 3 { return PokerEvaluator.best(hole + board).name }
+        return handDescription(hole, board: board)
     }
 
     /// The player's hand in words: the pair or the suited cards before the

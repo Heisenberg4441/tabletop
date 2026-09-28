@@ -5,6 +5,10 @@
 //
 //      your turn         [ Min ½ Pot ¾ Pot Pot All-in ]  Fold · Call 60 · Raise to 180
 //                        [ ━━━━━●──────────  180 ]
+//      checking is free  [ … ]                          Check · Bet 40
+//                        (no Fold: throwing away a hand that could see the
+//                        next card for nothing is never right, and F is the
+//                        easiest key on the bar to hit by habit)
 //      someone else's    Check/Fold (ticked in advance)
 //      between hands     Top Up · Deal Next Hand
 //
@@ -12,10 +16,10 @@
 //  120" moves no buttons; a different set crossfades. The bar is sized for the
 //  bet control whether it shows or not, so the table never jumps.
 //
-//  Keys: F folds, C checks or calls, Return confirms the bet (or deals the
-//  next hand), R puts the keyboard on the bet slider, ← and → move the
-//  amount by a chip (⇧ by ten) without it, and Escape puts the amount back
-//  and the keyboard back on the table.
+//  Keys: F folds (when folding costs something), C checks or calls, Return
+//  confirms the bet (or deals the next hand), R puts the keyboard on the bet
+//  slider, ← and → move the amount by a chip (⇧ by ten) without it, and
+//  Escape puts the amount back and the keyboard back on the table.
 //
 
 import AppKit
@@ -62,9 +66,11 @@ final class PokerActionPanel {
             guard let o = table.options() else { return setMode(.hidden, actions: [], animated: animated) }
             showTurn(o, table: table, animated: animated)
         case .playing, .botThinking:
-            // Still in the hand with chips behind: the box to tick in advance.
-            if let seat = table.humanSeat, table.players[seat].canAct, table.phase == .betting || table.phase == .streetComplete,
-               !flow.autopilot {
+            // Still in the hand with chips behind, and a turn still to come —
+            // not once everyone else is all in, when nobody is left to bet
+            // against: the box to tick in advance.
+            if let seat = table.humanSeat, table.players[seat].canAct, !flow.autopilot,
+               Self.turnMayCome(table, seat: seat) {
                 let armed = flow.preAction == .checkFold
                 let toggle = ChromeAction(id: "checkFold",
                                           title: NSLocalizedString("Check/Fold", comment: "poker pre-action: check if free, else fold"),
@@ -95,6 +101,17 @@ final class PokerActionPanel {
         }
     }
 
+    /// Whether `seat` may yet be asked to act this hand: somebody else can
+    /// still bet, or it is already its turn.
+    static func turnMayCome(_ table: PokerTable, seat: Int) -> Bool {
+        let othersCanBet = table.players.contains { $0.seat != seat && $0.canAct }
+        switch table.phase {
+        case .betting: return othersCanBet || table.toAct == seat
+        case .streetComplete: return othersCanBet
+        case .betweenHands, .gameOver: return false
+        }
+    }
+
     private func showTurn(_ o: PokerActionOptions, table: PokerTable, animated: Bool) {
         options = o
         let unit = max(1, table.chipUnit)
@@ -114,6 +131,7 @@ final class PokerActionPanel {
             defaultAmount = Self.suggestedTotal(o, table: table)
             if fresh { bet.value = defaultAmount }
         }
+        if !canSize { releaseKeyboardFromBet() }
         bet.isHidden = !canSize
 
         let fold = ChromeAction(id: "fold", title: NSLocalizedString("Fold", comment: "poker action button"),
@@ -137,7 +155,7 @@ final class PokerActionPanel {
             guard let self, let o = self.options else { return }
             self.onAction?(self.chosenAction(o))
         }
-        setMode(.turn, actions: [fold, passive, aggressive], animated: animated)
+        setMode(.turn, actions: o.canCheck ? [passive, aggressive] : [fold, passive, aggressive], animated: animated)
     }
 
     /// What Return does now: the amount on the slider, or everything when
@@ -194,6 +212,7 @@ final class PokerActionPanel {
         mode = newMode
         if newMode != .turn {
             options = nil
+            releaseKeyboardFromBet()
             bet.isHidden = true
         }
         let show = !actions.isEmpty
@@ -249,6 +268,13 @@ final class PokerActionPanel {
             bet.value = defaultAmount
             refreshAggressiveTitle()
         }
+        releaseKeyboardFromBet()
+    }
+
+    /// A hidden control holding the keyboard strands it: AppKit hands it to
+    /// the window, where the table's keys — R, the arrows, Escape — are never
+    /// heard again. So before the bet control goes, the table gets it back.
+    private func releaseKeyboardFromBet() {
         if let window = bar.window, let first = window.firstResponder as? NSView, first.isDescendant(of: bet) {
             window.makeFirstResponder(bar.superview)
         }

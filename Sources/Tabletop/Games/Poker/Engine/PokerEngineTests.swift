@@ -38,6 +38,7 @@ enum PokerEngineTests {
         persistence(t)
         fuzz(t)
         bots(t)
+        PokerExploitTests.run(t)
     }
 
     // MARK: - Helpers
@@ -592,9 +593,17 @@ enum PokerEngineTests {
         t.check("…and so does a hand in progress", midDecoded == table)
         var restored = midDecoded
         restored?.abandonHandInProgress()
-        t.check("a hand caught in progress can be given back to the players",
+        t.check("a hand that cannot go on can be given back to the players",
                 restored?.phase == .betweenHands && restored?.isConsistent == true
                     && restored?.players.allSatisfy({ $0.bet == 0 && $0.committed == 0 }) == true)
+        // …without the same cards coming round again: the next hand is dealt
+        // from the next number, not the abandoned one's.
+        if var again = restored {
+            let abandonedHoles = table.players.map(\.holeCards)
+            again.startHand()
+            t.check("…and the next hand is a new deal, not the abandoned one again",
+                    again.handNumber == table.handNumber + 1 && again.players.map(\.holeCards) != abandonedHoles)
+        }
 
         // Missing and damaged keys.
         if var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -630,8 +639,17 @@ enum PokerEngineTests {
         between.abandonHandInProgress()
         PokerStorage.save(between)
         t.check("the table saves between hands and loads back", PokerStorage.loadTable() == between)
-        PokerStorage.save(table)   // mid-hand: ignored
-        t.check("a hand in progress is not saved over it", PokerStorage.loadTable() == between)
+        PokerStorage.save(table)
+        t.check("a hand in progress is saved and comes back exactly — deck and all", PokerStorage.loadTable() == table)
+        var original = table
+        PokerBot.playOut(&original, samples: 30)
+        if var resumed = PokerStorage.loadTable() {
+            PokerBot.playOut(&resumed, samples: 30)
+            t.check("…and plays on to the same end as if nobody had quit",
+                    resumed == original && original.phase == .betweenHands)
+        } else {
+            t.check("…and plays on to the same end as if nobody had quit", false)
+        }
         PokerStorage.save(stats)
         t.check("the stats save and load", PokerStorage.loadStats() == stats)
         t.check("the files are named for poker",
