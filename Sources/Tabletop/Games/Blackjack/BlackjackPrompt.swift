@@ -33,6 +33,11 @@ final class BlackjackPrompt: NSView {
     init(title: String, detail: String, actions: [ChromeAction]) {
         super.init(frame: .zero)
         wantsLayer = true
+        // A smoked underlay beneath the glass, so the lettering printed on
+        // the cloth under the strip does not read through its words.
+        layer?.backgroundColor = NSColor(white: 0, alpha: 0.34).cgColor
+        layer?.cornerRadius = Radius.large
+        layer?.cornerCurve = .continuous
         panel.autoresizingMask = [.width, .height]
         addSubview(panel)
         titleLabel.stringValue = title

@@ -69,7 +69,8 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
     private(set) var coach: BlackjackCoachLevel
     private(set) var statistics: BlackjackStatistics
     private var shoesStarted: Int
-    private(set) var table: BlackjackTableView!
+    /// The table. Made with the view, in `loadView`.
+    private(set) lazy var table = BlackjackTableView()
 
     /// On screen, in front, in a key and visible window.
     private var isActive = false
@@ -115,9 +116,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
     }
 
     override func loadView() {
-        let table = BlackjackTableView()
         table.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
-        self.table = table
         view = table
         table.rack.onPick = { [weak self] value in self?.pickChip(value) }
         table.rack.onRemove = { [weak self] value in self?.takeBack(value) }

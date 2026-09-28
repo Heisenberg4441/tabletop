@@ -31,10 +31,7 @@ enum BlackjackPlayTest {
         window.contentView = game.view
         game.view.frame = CGRect(x: 0, y: 0, width: 1200, height: 800)
         game.view.layoutSubtreeIfNeeded()
-        guard let table = game.table else {
-            t.check("the table loads", false)
-            return
-        }
+        let table = game.table
         table.scheduler.isImmediate = true
         game.gameDidBecomeActive()
         t.check("a new table starts with 1,000 and a full six-deck shoe", game.engine.bankroll == 1_000

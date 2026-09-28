@@ -24,6 +24,7 @@ enum BlackjackTests {
         payouts(t)
         splitting(t)
         peeking(t)
+        labels(t)
         shoe(t)
         strategy(t)
         saving(t)
@@ -257,6 +258,18 @@ enum BlackjackTests {
                 && split.round?.hands.allSatisfy({ $0.isSettled }) == true)
         t.check("the split round balances", split.isBalanced)
 
+        // Split, double one of the hands, dealer busts: each hand is paid on
+        // its own bet — 400 back on the doubled 200, 200 on the other.
+        var das = table("8c 6d 8h Tc 3s Kd 9h 9c")
+        das.perform(.split)
+        runDealer(&das)
+        das.perform(.double)
+        runDealer(&das)
+        das.perform(.stand)
+        runDealer(&das)
+        t.check("split and double after split pay on each hand's own bet (400 and 200 back)",
+                das.round?.hands.map(\.returned) == [400, 200] && das.bankroll == 1_300 && das.isBalanced)
+
         var noDAS = BlackjackRules()
         noDAS.doubleAfterSplit = false
         var strict = table("8c 6d 8h Tc 3s", rules: noDAS)
@@ -288,6 +301,32 @@ enum BlackjackTests {
                 && !broke.legalActions().contains(.double))
         broke.perform(.stand)
         t.check("tens of different ranks split as a pair", hand("Kc Qd").isPair)
+    }
+
+    // MARK: Words on the table
+
+    private static func labels(_ t: TestReporter) {
+        t.check("a soft total reads 'Soft 17', a hard one '17'", BlackjackScene.totalText(BlackjackTotal(points: [1, 6])) == "Soft 17"
+                && BlackjackScene.totalText(BlackjackTotal(points: [10, 7])) == "17")
+        t.check("soft 21 reads '21'", BlackjackScene.totalText(BlackjackTotal(points: [1, 10])) == "21")
+        var win = table("Tc 7d 9h Tc")
+        win.perform(.stand)
+        runDealer(&win)
+        var natural = table("As 9d Kh 8c")
+        runDealer(&natural)
+        var give = table("Tc Td 6h 7c")
+        runDealer(&give)
+        give.perform(.surrender)
+        runDealer(&give)
+        func label(_ engine: BlackjackEngine) -> String? { BlackjackScene(engine: engine).hands.first?.label }
+        t.check("results read 'Win +100', 'Blackjack +150', 'Surrender −50'",
+                label(win) == "Win +100" && label(natural) == "Blackjack +150" && label(give) == "Surrender \u{2212}50")
+        let paid = BlackjackScene(engine: natural)
+        t.check("a paid natural shows the bet and the 3:2 beside it until collected",
+                paid.stacks[.bet(0)]?.amount == 100 && paid.stacks[.payout(0)]?.amount == 150
+                    && BlackjackScene(engine: natural, chipsCollected: true).chipsOnCloth == 0)
+        t.check("the dealer's hole card is face down until turned", table("9c 6d 8h Tc").phase == .playerTurn
+                && BlackjackScene(engine: table("9c 6d 8h Tc")).dealer.map(\.faceUp) == [true, false])
     }
 
     // MARK: The peek
