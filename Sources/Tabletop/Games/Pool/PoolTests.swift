@@ -11,5 +11,6 @@ enum PoolTests {
     static func run(_ t: TestReporter) {
         t.section("Pool")
         t.check("the game introduces itself as pool", PoolGame.info.id == .pool)
+        PoolEngineTests.run(t)
     }
 }
