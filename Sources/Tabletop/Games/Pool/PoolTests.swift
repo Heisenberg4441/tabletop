@@ -226,8 +226,10 @@ enum PoolTests {
                     loaded?.options == PoolOptions() && loaded?.currentRun == 0)
             object["table"] = ["balls": "none"]
             let broken = try? JSONSerialization.data(withJSONObject: object)
-            t.check("a save without a readable table is not resumed",
-                    broken.flatMap { try? JSONDecoder().decode(PoolSavedGame.self, from: $0) } == nil)
+            // The engine reads what it can of a damaged table, so the save
+            // may load — but a table without its balls is never resumed.
+            let resumable = broken.flatMap { try? JSONDecoder().decode(PoolSavedGame.self, from: $0) }?.isPlausible ?? false
+            t.check("a save without a readable table is not resumed", !resumable)
         }
         let partial = Data(#"{"played": {"easy": 4}, "bestRun": "lots"}"#.utf8)
         let stats = try? JSONDecoder().decode(PoolStatistics.self, from: partial)
@@ -263,43 +265,7 @@ enum PoolTests {
                 !game.table.cue.node.isHidden && !game.table.guides.node.isHidden)
         t.check("GameInfo says one player against the computer", PoolGame.info.detail == "1 player · vs computer")
 
-        // Whole games, the player's shots chosen by the engine's own
-        // computer player: the turn must always come back to someone, the
-        // balls must all be accounted for, and the game must end.
-        let gamesStarted = Date()
-        var endedGames = 0
-        var conserved = true
-        var stuck = false
-        // Nine-ball to the end; eight-ball for its first dozen shots — enough
-        // to cross the break, the open table and the first groups, inside
-        // the few seconds a debug self-test may take.
-        for (index, (mode, limit)) in [(PoolMode.nineBall, 120), (.eightBall, 12)].enumerated() {
-            var options = PoolOptions()
-            options.mode = mode
-            options.difficulty = .hard
-            game.startNewGame(options, breaker: PoolSeat.you)
-            let count = game.match.table.balls.count
-            var shots = 0
-            while !game.match.isOver && shots < limit {
-                guard game.phase == .aiming, game.isPlayersTurn else { stuck = true; break }
-                let decision = PoolAI.decide(table: game.match.table, rules: game.match.rules, difficulty: .hard,
-                                             seed: UInt64(shots + index * 1000))
-                if let spot = decision.placement, game.playerHasBallInHand { game.moveCueBall(to: spot) }
-                game.aim = decision.shot.aim
-                game.setSpin(side: decision.shot.tipSide, vertical: decision.shot.tipVertical)
-                game.strike(decision.shot)
-                shots += 1
-                if game.match.table.balls.count != count { conserved = false }
-                let onCloth = game.match.table.balls.filter { $0.pocket == nil }
-                if onCloth.contains(where: { abs($0.position.x) > 1.3 || abs($0.position.y) > 0.66 }) { conserved = false }
-            }
-            if mode == .nineBall && game.match.isOver { endedGames += 1 }
-        }
-        t.check("the turn always comes back to the player or the game ends", !stuck)
-        t.check("every ball is on the cloth or in a pocket, all game long", conserved)
-        t.check("a game against the computer comes to an end", endedGames == 1)
-        t.info(String(format: "a game and a dozen shots through the controller: %.1f s", Date().timeIntervalSince(gamesStarted)))
-        t.check("finished games are counted", PoolStatistics.load().played.values.reduce(0, +) >= endedGames)
+        computerGames(t, game: game)
 
         // New game from the card.
         game.presentOptions()
@@ -339,6 +305,173 @@ enum PoolTests {
 
         energy(t)
         snapshot(t)
+    }
+
+    // MARK: Whole games
+
+    /// One game for `computerGames`: the rules, who breaks, and how well each
+    /// seat plays.
+    private struct GamePlan {
+        let mode: PoolMode
+        let breaker: Int
+        let you: PoolDifficulty
+        let computer: PoolDifficulty
+    }
+
+    /// Whole games, computer against computer, through the controller the
+    /// way they are played. The player's seat is the engine's computer player
+    /// striking through the same `strike` the Shoot button uses (putting the
+    /// cue ball down first with ball in hand, as a drag does, and only where
+    /// the rules allow); the other seat is the controller's own computer
+    /// turn; every animation lands at once. After every shot — either
+    /// seat's — the playback must end exactly on the table the rules judged,
+    /// and the table and the rules must make sense; every game must end with
+    /// a winner.
+    private static func computerGames(_ t: TestReporter, game: PoolGame) {
+        var plans: [GamePlan] = []
+        if PoolEngineTests.isRelease {
+            // Every pairing of levels at both games, each seat breaking in
+            // turn, and a practice rack cleared on its own.
+            for (k, (you, computer)) in [(PoolDifficulty.hard, PoolDifficulty.medium), (.medium, .hard), (.easy, .easy),
+                                         (.easy, .medium), (.medium, .medium), (.hard, .easy)].enumerated() {
+                for mode in [PoolMode.eightBall, .nineBall] {
+                    let breaker = (k + (mode == .nineBall ? 1 : 0)) % 2
+                    plans.append(GamePlan(mode: mode, breaker: breaker, you: you, computer: computer))
+                }
+            }
+            plans.append(GamePlan(mode: .practice, breaker: PoolSeat.you, you: .medium, computer: .medium))
+        } else {
+            // A debug build runs the engine some seventy times slower: one
+            // game of each, still whole, at the cheapest level.
+            plans = [
+                GamePlan(mode: .nineBall, breaker: PoolSeat.you, you: .easy, computer: .easy),
+                GamePlan(mode: .eightBall, breaker: PoolSeat.computer, you: .easy, computer: .easy),
+            ]
+        }
+        let started = Date()
+        let playedBefore = PoolStatistics.load().played.values.reduce(0, +)
+        var finished = 0, shots = 0
+        var problems: [String] = []
+        var wins = [0, 0]
+        var trueToPlayback = true, rightPockets = true, legalPlacements = true
+        game.shotObserver = { result, _ in
+            guard let trajectory = result.trajectory else { trueToPlayback = false; return }
+            // What was shown is what was scored: the playback's last moment
+            // is the final table, ball for ball, and every ball it showed
+            // dropping went down the pocket the rules were told about.
+            let end = trajectory.poses(at: trajectory.duration)
+            for ball in result.final.balls {
+                guard let pose = end[ball.number] else { trueToPlayback = false; continue }
+                if pose.pocket != ball.pocket { trueToPlayback = false }
+                if ball.pocket == nil && simd_distance(pose.position, ball.position) > 1e-9 { trueToPlayback = false }
+            }
+            for (ball, pocket) in result.pocketed {
+                guard let track = trajectory.tracks.first(where: { $0.number == ball }) else { rightPockets = false; continue }
+                let dropping = PoolTrajectory.pose(of: track, at: track.pocketTime + 0.05)
+                if dropping?.pocket != pocket || track.pocket != pocket { rightPockets = false }
+            }
+        }
+        defer { game.shotObserver = nil }
+
+        for (index, plan) in plans.enumerated() {
+            var options = PoolOptions()
+            options.mode = plan.mode
+            options.difficulty = plan.computer
+            game.startNewGame(options, breaker: plan.breaker)
+            let numbers = Set(game.match.table.balls.map(\.number))
+            var turns = 0
+            var problem = self.problem(in: game, numbers: numbers, before: nil)
+            // Practice has no winner: it is over when the rack is cleared.
+            func done() -> Bool { game.match.isOver || (game.match.isPractice && game.match.ballsOnTable.isEmpty) }
+            while problem == nil && !done() && turns < 150 {
+                let before = game.match.table
+                let decision = PoolAI.decide(table: game.match.table, rules: game.match.rules, difficulty: plan.you,
+                                             seed: game.match.decisionSeed ^ UInt64(index + 1) << 40,
+                                             geometry: game.geometry)
+                if let spot = decision.placement, game.playerHasBallInHand {
+                    if !game.isAllowedPlacement(spot) { legalPlacements = false }
+                    game.moveCueBall(to: spot)
+                }
+                game.aim = decision.shot.aim
+                game.setSpin(side: decision.shot.tipSide, vertical: decision.shot.tipVertical)
+                game.strike(decision.shot)
+                turns += 1
+                problem = self.problem(in: game, numbers: numbers, before: before)
+            }
+            shots += game.match.rules.shotCount
+            if let problem {
+                problems.append("\(PoolEngineText.mode(plan.mode)) game \(index + 1): \(problem)")
+            } else if let winner = game.match.rules.winner {
+                finished += 1
+                wins[winner] += 1
+            } else if game.match.isPractice && game.match.ballsOnTable.isEmpty {
+                finished += 1
+            } else {
+                problems.append("\(PoolEngineText.mode(plan.mode)) game \(index + 1) never ended")
+            }
+        }
+        t.check("\(finished) of \(plans.count) whole games, computer against computer, end with a winner"
+                    + (plans.contains { $0.mode == .practice } ? " (or, in practice, a cleared table)" : ""),
+                finished == plans.count)
+        t.check("the table and the rules make sense after every one of \(shots) shots"
+                    + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), problems.isEmpty)
+        t.check("each shot's playback ends exactly on the table the rules judged", trueToPlayback)
+        t.check("every ball seen dropping goes down the pocket the rules counted", rightPockets)
+        t.check("the player's seat only ever puts the cue ball where the rules allow", legalPlacements)
+        let contested = plans.filter { $0.mode != .practice }.count
+        t.check("finished games are counted",
+                PoolStatistics.load().played.values.reduce(0, +) == playedBefore + wins[0] + wins[1] && wins[0] + wins[1] == contested)
+        t.info(String(format: "%d games (player's seat %d, computer's %d), %d shots, through the controller: %.1f s",
+                      plans.count, wins[0], wins[1], shots, Date().timeIntervalSince(started)))
+    }
+
+    /// What is wrong with the game at rest between turns, if anything.
+    private static func problem(in game: PoolGame, numbers: Set<Int>, before: PoolTableState?) -> String? {
+        let g = game.geometry, R = g.ballRadius
+        let table = game.match.table, rules = game.match.rules
+        guard Set(table.balls.map(\.number)) == numbers, table.balls.count == numbers.count else {
+            return "balls lost or doubled"
+        }
+        guard table.isAtRest else { return "the balls are still moving" }
+        let onCloth = table.balls.filter { $0.pocket == nil }
+        for ball in onCloth {
+            // A ball may stop in a pocket's jaws, a little past the rail's line.
+            guard ball.position.x.isFinite, ball.position.y.isFinite,
+                  abs(ball.position.x) < g.length / 2 + 0.06, abs(ball.position.y) < g.width / 2 + 0.06 else {
+                return "ball \(ball.number) is off the table"
+            }
+        }
+        for (i, a) in onCloth.enumerated() {
+            for b in onCloth[(i + 1)...] where simd_distance(a.position, b.position) < 2 * R - 1e-6 {
+                return "balls \(a.number) and \(b.number) overlap"
+            }
+        }
+        if let before {
+            // A ball once down stays down, but for the eight or the nine
+            // spotted again.
+            let down = Set(before.balls.filter { $0.number != 0 && $0.pocket != nil }.map(\.number))
+            let back = down.filter { table.ball($0)?.pocket == nil }
+            if !back.isSubset(of: [8, 9]) { return "ball \(back.sorted()) came back out of a pocket" }
+        }
+        guard (0...1).contains(rules.shooter) else { return "nobody is to shoot" }
+        if game.match.options.mode == .eightBall {
+            let groups = rules.groups
+            guard groups.count == 2, (groups[0] == nil) == (groups[1] == nil), groups[0] == nil || groups[0] != groups[1] else {
+                return "the groups do not add up"
+            }
+        }
+        if rules.ballInHand != nil && rules.lastFoul == nil && !rules.isBreakShot && !game.match.isPractice {
+            return "ball in hand without a foul"
+        }
+        if game.match.isOver {
+            guard game.phase == .over else { return "the game ended but play goes on" }
+            let deciding = game.match.options.mode == .nineBall ? 9 : 8
+            guard table.ball(deciding)?.pocket != nil else { return "the game ended with the \(deciding) on the cloth" }
+        } else {
+            guard game.phase == .aiming, game.isPlayersTurn else { return "the turn stopped at \(game.phase)" }
+            guard table.cueBall?.pocket == nil else { return "there is no cue ball to play" }
+        }
+        return nil
     }
 
     /// Nothing ticks unless the game is in front; a shot struck while it is

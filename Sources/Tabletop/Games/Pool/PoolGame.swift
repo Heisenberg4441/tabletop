@@ -114,6 +114,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var tipVertical = 0.0
     /// The strength Shoot and Return use, and the meter shows at rest.
     var armedPower = 0.62
+    /// The player's own armed strength while a break stroke is armed in its
+    /// place, to go back to after the break.
+    var powerBeforeBreak: Double?
     var chargePower = 0.0
     var chargeSource: ChargeSource?
     /// The aim view's tilt and distance, which the player adjusts.
@@ -145,6 +148,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var dragLast: CGPoint = .zero
     /// The last place a dragged cue ball was allowed to be.
     var dragValidSpot: SIMD2<Double>?
+    /// Told about every shot as it is taken into the game — the result the
+    /// balls played out and the rules' verdict on it. For the self-tests.
+    var shotObserver: ((PoolShotResult, PoolTurnOutcome) -> Void)?
 
     // Views.
     var root: PoolRootView!

@@ -14,6 +14,10 @@
 //    thinking    the computer's turn: its seat sweeping gold while it
 //                decides, the camera watching over its shoulder
 //
+//  `--pool-at SECONDS` stops the two shots — the break in "rolling", the
+//  winning eight in "result" — at that moment of their recorded playback,
+//  to look at a ball in flight or dropping into its pocket.
+//
 //  Only the engine's public API is used: a rack's balls moved about, a rule
 //  state from `newGame` with its fields set, and for the result a real shot
 //  played through the real physics and rules.
@@ -52,7 +56,7 @@ enum PoolScenarios {
             game.aimDistance = 1.55
             game.setViewMode(.aim, animated: false)
         case "result":
-            playWinningEight(game)
+            playWinningEight(game, stoppingAt: playbackTime)
         case "thinking":
             var table = midGame()
             move(&table, 0, to: [0.62, 0.30])
@@ -68,11 +72,10 @@ enum PoolScenarios {
             let apex = game.geometry.footSpot
             let aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
             game.aim = aim
-            game.previewShot(PoolShot(aim: aim, power: 0.92, tipSide: 0, tipVertical: 0.1), at: 0.62)
+            game.previewShot(PoolShot(aim: aim, power: PoolGame.breakPower, tipSide: 0, tipVertical: -0.15),
+                             at: playbackTime ?? 0.62)
         default:
-            // The break: lined up on the head ball, a firm stroke armed.
-            game.armedPower = 0.88
-            game.powerMeter.armedPower = 0.88
+            // The break: lined up on the head ball, the break stroke armed.
             if let cue = game.match.table.cueBall {
                 let apex = game.geometry.footSpot
                 game.aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
@@ -82,6 +85,11 @@ enum PoolScenarios {
         game.refreshAim()
         game.refreshHUD()
         game.applyCamera()
+    }
+
+    /// `--pool-at`: a moment of a shot's playback to stop at, in seconds.
+    static var playbackTime: Double? {
+        TabletopEnvironment.value(of: "--pool-at").flatMap(Double.init).map { max(0, $0) }
     }
 
     // MARK: Tables
@@ -101,10 +109,21 @@ enum PoolScenarios {
                 table.balls[i].position = p
                 table.balls[i].pocket = nil
             } else {
-                table.balls[i].pocket = 0
+                pocket(&table.balls[i])
             }
         }
         return table
+    }
+
+    /// Down a pocket, where the engine keeps a pocketed ball: at the
+    /// pocket's centre, still.
+    static func pocket(_ ball: inout PoolBall, _ id: Int = 0) {
+        let pockets = PoolTableGeometry.standard.pockets
+        let pocket = pockets.first { $0.id == id } ?? pockets[0]
+        ball.pocket = pocket.id
+        ball.position = pocket.center
+        ball.velocity = .zero
+        ball.spin = .zero
     }
 
     static func move(_ table: inout PoolTableState, _ number: Int, to p: SIMD2<Double>) {
@@ -121,31 +140,16 @@ enum PoolScenarios {
         rules.shotCount = 14
         rules.ballInHand = nil
         if ballInHand == true {
-            // Whatever "anywhere" is called, it is the rule state a foul by
-            // the computer leaves behind; take it from the rules themselves.
-            rules.ballInHand = anywhere()
+            // What a foul by the computer leaves the player.
+            rules.ballInHand = .anywhere
+            rules.lastFoul = .wrongBallFirst
+            rules.fouls = [0, 1]
         }
         game.match.table = table
         game.match.rules = rules
         game.match.pocketedBy = [[1, 4, 5, 7], [11, 13]]
         game.table.apply(table: table)
         game.beginTurn(announce: false)
-    }
-
-    /// The ball-in-hand state the rules give after a scratch that is not
-    /// the break.
-    static func anywhere() -> PoolBallInHand? {
-        var table = midGame()
-        var rules = PoolRules.newGame(.eightBall, breaker: PoolSeat.computer)
-        rules.isBreakShot = false
-        rules.groups = [.solids, .stripes]
-        // A cue ball struck straight into a corner pocket.
-        move(&table, 0, to: [1.0, 0.45])
-        let pocket = PoolTableGeometry.standard.pockets.max { $0.center.x + $0.center.y < $1.center.x + $1.center.y }
-        let target = pocket?.center ?? [1.3, 0.66]
-        let shot = PoolShot(aim: atan2(target.y - 0.45, target.x - 1.0), power: 0.35, tipSide: 0, tipVertical: 0)
-        let result = PoolPhysics.simulate(shot, from: table, record: false)
-        return PoolRules.evaluate(result, before: table, state: rules).newState.ballInHand
     }
 
     /// Aims the player's cue so ball `number` goes to the pocket with `id`.
@@ -161,15 +165,16 @@ enum PoolScenarios {
 
     /// Clears the table down to three stripes and the eight, and has the
     /// player sink the eight — through the engine, so the banner says what
-    /// the rules really decided.
-    static func playWinningEight(_ game: PoolGame) {
+    /// the rules really decided. With a time, the shot is shown at that
+    /// moment of its playback instead, before the rules have spoken.
+    static func playWinningEight(_ game: PoolGame, stoppingAt time: Double? = nil) {
         var table = PoolRack.eightBall(seed: 11)
         let spots: [Int: SIMD2<Double>] = [
             0: [0.58, 0.18], 8: [0.98, 0.43], 9: [-0.42, -0.30], 12: [-0.95, 0.35], 15: [0.20, -0.44],
         ]
         for i in table.balls.indices {
             let n = table.balls[i].number
-            if let p = spots[n] { table.balls[i].position = p; table.balls[i].pocket = nil } else { table.balls[i].pocket = 0 }
+            if let p = spots[n] { table.balls[i].position = p; table.balls[i].pocket = nil } else { pocket(&table.balls[i]) }
         }
         setUp(game, table: table, shooter: PoolSeat.you, ballInHand: nil)
         game.match.pocketedBy = [[1, 2, 3, 4, 5, 6, 7], [10, 11, 13, 14]]
@@ -179,6 +184,11 @@ enum PoolScenarios {
         let out = simd_normalize(target - eight.position)
         let ghost = eight.position - out * 2 * game.geometry.ballRadius
         game.aim = atan2(ghost.y - cue.position.y, ghost.x - cue.position.x)
-        game.strike(PoolShot(aim: game.aim, power: 0.32, tipSide: 0, tipVertical: -0.2))
+        let shot = PoolShot(aim: game.aim, power: 0.32, tipSide: 0, tipVertical: -0.2)
+        if let time {
+            game.previewShot(shot, at: time)
+        } else {
+            game.strike(shot)
+        }
     }
 }

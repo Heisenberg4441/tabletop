@@ -46,12 +46,7 @@ enum PoolEngineText {
     }
 
     /// The balls in a group, lowest first.
-    static func numbers(in group: PoolGroup) -> [Int] {
-        switch group {
-        case .solids: return Array(1...7)
-        case .stripes: return Array(9...15)
-        }
-    }
+    static func numbers(in group: PoolGroup) -> [Int] { Array(group.numbers) }
 
     // MARK: Fouls
 
@@ -70,19 +65,19 @@ enum PoolEngineText {
     /// Why the game ended, as the result banner's second line.
     static func gameOver(_ reason: PoolGameOverReason, winnerIsYou: Bool, opponent: String) -> String {
         switch reason {
-        case .eightPocketed:
+        case .eightBallPotted:
             return winnerIsYou
                 ? NSLocalizedString("You cleared your group and sank the eight.", comment: "pool result")
                 : String(format: NSLocalizedString("%@ cleared the table and sank the eight.", comment: "pool result"), opponent)
-        case .eightEarly:
+        case .eightBallEarly:
             return winnerIsYou
                 ? String(format: NSLocalizedString("%@ sank the eight too early.", comment: "pool result"), opponent)
                 : NSLocalizedString("The eight went down before your group was clear.", comment: "pool result")
-        case .eightOnFoul:
+        case .eightBallOnFoul:
             return winnerIsYou
                 ? String(format: NSLocalizedString("%@ fouled on the eight.", comment: "pool result"), opponent)
                 : NSLocalizedString("The eight went down on a foul.", comment: "pool result")
-        case .ninePocketed:
+        case .nineBallPotted:
             return winnerIsYou
                 ? NSLocalizedString("You sank the nine.", comment: "pool result")
                 : String(format: NSLocalizedString("%@ sank the nine.", comment: "pool result"), opponent)
@@ -96,10 +91,12 @@ enum PoolEngineText {
     /// and groups are told from the outcome's own fields).
     static func remark(_ message: PoolRuleMessage) -> String? {
         switch message {
-        case .foul, .groupAssigned, .tableOpen: return nil
-        case .eightRespotted: return NSLocalizedString("The eight is spotted again", comment: "pool toast")
-        case .nineRespotted: return NSLocalizedString("The nine is spotted again", comment: "pool toast")
+        case .foul, .ballInHand, .groupAssigned, .tableOpen, .continues, .turnPasses, .gameOver:
+            return nil
+        case .eightBallRespotted: return NSLocalizedString("The eight is spotted again", comment: "pool toast")
+        case .nineBallRespotted: return NSLocalizedString("The nine is spotted again", comment: "pool toast")
         case .cueBallRespotted: return NSLocalizedString("Cue ball spotted again", comment: "pool toast")
+        case .tableCleared: return NSLocalizedString("Table cleared", comment: "pool toast: practice, every ball is down")
         }
     }
 }

@@ -147,25 +147,25 @@ extension PoolGame: PoolSceneViewInput {
         refreshAim()
     }
 
-    /// The cue ball follows the pointer wherever the rules allow it; where
-    /// they do not, it waits at the last allowed spot and a red ghost shows
-    /// where the pointer is.
+    /// The cue ball follows the pointer wherever the rules allow it, sliding
+    /// along the head string, the cushions and other balls; where nothing
+    /// near is allowed, it waits at the last allowed spot and a red ghost
+    /// shows where the pointer is. Every spot it stops on is one
+    /// `PoolRules.isValidPlacement` accepts.
     private func carryCueBall(to point: CGPoint) {
         let R = geometry.ballRadius
         guard let p = sceneView.tablePoint(under: point, height: R) else { return }
-        let clamped = SIMD2(max(-geometry.length / 2 + R, min(geometry.length / 2 - R, p.x)),
-                            max(-geometry.width / 2 + R, min(geometry.width / 2 - R, p.y)))
-        var others = match.table
-        others.balls.removeAll { $0.number == 0 }
-        if PoolRules.isValidPlacement(clamped, match.rules, table: others, geometry: geometry) {
-            dragValidSpot = clamped
+        if let spot = slidePlacement(toward: p), simd_distance(spot, p) < 4 * R {
+            dragValidSpot = spot
             table.placementGhost.isHidden = true
-            moveCueBall(to: clamped)
+            moveCueBall(to: spot)
             table.placementRing.isHidden = false
-            table.placementRing.simdPosition = PoolSpace.sceneSIMD(clamped, height: 0.0008)
+            table.placementRing.simdPosition = PoolSpace.sceneSIMD(spot, height: 0.0008)
         } else {
+            let shown = SIMD2(max(-geometry.length / 2 + R, min(geometry.length / 2 - R, p.x)),
+                              max(-geometry.width / 2 + R, min(geometry.width / 2 - R, p.y)))
             table.placementGhost.isHidden = false
-            table.placementGhost.simdPosition = PoolSpace.sceneSIMD(clamped, height: R)
+            table.placementGhost.simdPosition = PoolSpace.sceneSIMD(shown, height: R)
             table.placementRing.isHidden = true
         }
         redraw()

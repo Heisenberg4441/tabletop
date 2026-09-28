@@ -60,6 +60,7 @@ extension PoolGame {
         phase = .aiming
         cueVisible = true
         cuePull = 0
+        armPowerForTurn()
         if announce {
             let text: String
             if match.rules.isBreakShot {
@@ -88,17 +89,19 @@ extension PoolGame {
 
         let gen = generation
         let table = match.table, rules = match.rules, difficulty = match.options.difficulty, seed = match.decisionSeed
+        let geometry = self.geometry
         if runsSynchronously {
-            decision = PoolAI.decide(table: table, rules: rules, difficulty: difficulty, seed: seed)
+            decision = PoolAI.decide(table: table, rules: rules, difficulty: difficulty, seed: seed, geometry: geometry)
             thinkingTimeUp = true
             proceedWithComputerTurn()
             return
         }
         // The decision is pure and Sendable; the answer comes back to the
         // main thread and waits there, if the game has been left meanwhile,
-        // until the scheduler is running again.
+        // until the scheduler is running again. It cannot be interrupted, so
+        // an answer for a game that has since been replaced is dropped.
         DispatchQueue.global(qos: .userInitiated).async {
-            let choice = PoolAI.decide(table: table, rules: rules, difficulty: difficulty, seed: seed)
+            let choice = PoolAI.decide(table: table, rules: rules, difficulty: difficulty, seed: seed, geometry: geometry)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard gen == self.generation, self.phase == .thinking else { return }
@@ -184,16 +187,49 @@ extension PoolGame {
             }), decorative: true)
         }
 
-        if let spot = decision.placement {
-            // Carry the cue ball to where the computer wants it.
+        if let spot = computerPlacement(decision) {
+            // Carry the cue ball to where the computer wants it, and set it
+            // down exactly there: the stroke was chosen for that spot.
             let from = match.table.cueBall?.position ?? geometry.headSpot
             addTween(PoolTween(duration: 0.7, update: { [weak self] t in
                 self?.moveCueBall(to: from + (spot - from) * t)
-            }, completion: { lineUp() }), decorative: true)
+            }, completion: { [weak self] in
+                self?.moveCueBall(to: spot)
+                lineUp()
+            }), decorative: true)
         } else {
             lineUp()
         }
     }
+
+    /// Where the computer's cue ball goes before its stroke: its own choice
+    /// when the rules give it ball in hand and allow that spot, the nearest
+    /// allowed spot otherwise, and nowhere without ball in hand.
+    func computerPlacement(_ decision: PoolAIDecision) -> SIMD2<Double>? {
+        guard match.rules.ballInHand != nil, let spot = decision.placement else { return nil }
+        return isAllowedPlacement(spot) ? spot : placementSpot(near: spot)
+    }
+
+    /// Whether the rules let the cue ball be put down at `point` now.
+    func isAllowedPlacement(_ point: SIMD2<Double>) -> Bool {
+        PoolRules.isValidPlacement(point, match.rules, table: match.table, geometry: geometry)
+    }
+
+    /// A break wants a full stroke — the meter's usual middle is barely a
+    /// quarter of a break's pace — so one is armed for it, and the player's
+    /// own strength comes back for the shot after.
+    func armPowerForTurn() {
+        if match.rules.isBreakShot {
+            if powerBeforeBreak == nil { powerBeforeBreak = armedPower }
+            armedPower = Self.breakPower
+        } else if let before = powerBeforeBreak {
+            powerBeforeBreak = nil
+            armedPower = before
+        }
+        powerMeter.armedPower = armedPower
+    }
+
+    static let breakPower = 0.92
 
     // MARK: Charging and shooting
 
@@ -299,7 +335,7 @@ extension PoolGame {
     private func startPlaybackIfReady() {
         guard phase == .striking, strokeLanded, let result = pendingResult else { return }
         pendingResult = nil
-        let outcome = PoolRules.evaluate(result, before: match.table, state: match.rules)
+        let outcome = PoolRules.evaluate(result, before: match.table, state: match.rules, geometry: geometry)
         let duration = result.trajectory?.duration ?? 0
         playback = Playback(result: result, outcome: outcome, time: 0, duration: duration)
         phase = .rolling
@@ -342,15 +378,10 @@ extension PoolGame {
         refreshHUD()
     }
 
-    /// When the cue ball first meets anything, from the engine's event log.
+    /// When the cue ball first meets a ball — or, if it meets none, when
+    /// anything first happens to it.
     static func firstContactTime(_ result: PoolShotResult) -> Double {
-        for event in result.events {
-            switch event {
-            case .ballBall(_, _, let time), .cushion(_, let time): return time
-            case .pocketed: continue
-            }
-        }
-        return 0
+        result.firstContactTime ?? result.events.first?.time ?? 0
     }
 
     // MARK: The frame
@@ -425,6 +456,7 @@ extension PoolGame {
         self.playback = nil
         let summary = match.apply(playback.outcome, result: playback.result)
         table.apply(table: match.table)
+        shotObserver?(playback.result, playback.outcome)
         if let run = summary.finishedRun, run > statistics.bestRun {
             statistics.bestRun = run
             statistics.save()
@@ -478,7 +510,7 @@ extension PoolGame {
             toast(text, symbol: "exclamationmark.circle", tint: you ? Palette.negative : Palette.textSecondary)
             return true
         } else if let group = summary.groupAssigned {
-            let mine = you ? group : (group == .solids ? PoolGroup.stripes : .solids)
+            let mine = you ? group : group.opposite
             let text = String(format: NSLocalizedString("You are on %@", comment: "pool toast: your group"),
                               PoolEngineText.group(mine).lowercased(with: .current))
             toast(text, symbol: "circle.lefthalf.filled")
@@ -518,30 +550,57 @@ extension PoolGame {
 
     // MARK: The cue ball
 
-    /// Puts a pocketed cue ball back on the cloth where it may be placed —
-    /// the engine may leave it in the pocket until someone takes it out.
+    /// Puts a pocketed or missing cue ball back on the cloth. The rules
+    /// already bring it back after a scratch; this only mends a save that
+    /// somehow kept it in a pocket, the way the rules would have.
     func ensureCueBallOnTable() {
-        guard let index = match.table.balls.firstIndex(where: { $0.number == 0 }) else { return }
-        guard match.table.balls[index].pocket != nil else { return }
-        let spot = placementSpot(near: geometry.headSpot)
-        match.table.balls[index].pocket = nil
-        match.table.balls[index].position = spot
-        match.table.balls[index].velocity = .zero
+        guard match.table.cueBall?.pocket != nil || match.table.cueBall == nil else { return }
+        let kitchen = match.rules.ballInHand == .kitchen
+        PoolRules.placeCueBall(on: &match.table, preferring: kitchen ? PoolRack.breakCueSpot(geometry) : geometry.headSpot,
+                               kitchen: kitchen, geometry: geometry)
         table.apply(table: match.table)
+    }
+
+    /// The allowed spot nearest `point` that the cue ball can slide to: kept
+    /// on the cloth (and behind the head string when the rules say so), and
+    /// eased out of any ball it would overlap — so a dragged ball runs along
+    /// an obstacle instead of sticking. Nil when nothing near is allowed.
+    func slidePlacement(toward point: SIMD2<Double>) -> SIMD2<Double>? {
+        let R = geometry.ballRadius
+        func clamp(_ p: SIMD2<Double>) -> SIMD2<Double> {
+            var q = SIMD2(max(-geometry.length / 2 + R, min(geometry.length / 2 - R, p.x)),
+                          max(-geometry.width / 2 + R, min(geometry.width / 2 - R, p.y)))
+            if match.rules.ballInHand == .kitchen { q.x = min(q.x, geometry.headStringX - 1e-5) }
+            return q
+        }
+        var p = clamp(point)
+        let others = match.table.balls.filter { $0.number != 0 && $0.pocket == nil }
+        for _ in 0..<4 {
+            if isAllowedPlacement(p) { return p }
+            // Out of every ball it overlaps, along the line from its centre.
+            for ball in others {
+                let d = p - ball.position
+                let distance = simd_length(d)
+                if distance < 2 * R + 1e-5 {
+                    let away = distance > 1e-9 ? d / distance : SIMD2(0, 1)
+                    p = ball.position + away * (2 * R + 2e-5)
+                }
+            }
+            p = clamp(p)
+        }
+        return isAllowedPlacement(p) ? p : nil
     }
 
     /// The nearest place to `point` the rules allow the cue ball, looking
     /// outwards in rings.
     func placementSpot(near point: SIMD2<Double>) -> SIMD2<Double> {
-        var others = match.table
-        others.balls.removeAll { $0.number == 0 }
-        if PoolRules.isValidPlacement(point, match.rules, table: others, geometry: geometry) { return point }
+        if isAllowedPlacement(point) { return point }
         for ring in 1...40 {
             let r = Double(ring) * geometry.ballRadius * 0.6
             for k in 0..<24 {
                 let a = Double(k) / 24 * 2 * .pi
                 let p = point + SIMD2(cos(a), sin(a)) * r
-                if PoolRules.isValidPlacement(p, match.rules, table: others, geometry: geometry) { return p }
+                if isAllowedPlacement(p) { return p }
             }
         }
         return point

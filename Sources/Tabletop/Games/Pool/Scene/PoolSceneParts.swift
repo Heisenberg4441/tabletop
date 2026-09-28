@@ -285,13 +285,20 @@ final class PoolGuideNodes {
 
         if let target = objectBall, let out = prediction.objectBallDirection, objectReach > 0 {
             let from = target + out * radius
-            lay(objectLine, from: from, to: clipToCloth(from, out, objectReach, d))
+            // No further than the engine says the ball's line meets a
+            // cushion or drops into a pocket.
+            let reach = prediction.objectBallStop.map { min(objectReach, max(0, simd_dot($0 - from, out))) } ?? objectReach
+            lay(objectLine, from: from, to: clipToCloth(from, out, reach, d))
         } else {
             objectLine.isHidden = true
         }
-        if let glance = prediction.cueBallDeflection, cueReach > 0, simd_length(glance) > 0.01 {
+        // A stunned cue ball leaves along the tangent line at the sine of the
+        // cut angle of its speed: nearly full hits barely move it, thin cuts
+        // carry it on. The line says so by its length.
+        let glanceShare = prediction.cutAngle.map { sin($0) } ?? 1
+        if let glance = prediction.cueBallDeflection, cueReach * glanceShare > 0.004, simd_length(glance) > 0.01 {
             let from = ghostAt + glance * radius
-            lay(cueLine, from: from, to: clipToCloth(from, glance, cueReach, d))
+            lay(cueLine, from: from, to: clipToCloth(from, glance, cueReach * glanceShare, d))
         } else {
             cueLine.isHidden = true
         }

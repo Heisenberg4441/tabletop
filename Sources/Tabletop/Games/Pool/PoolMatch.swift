@@ -140,12 +140,20 @@ struct PoolMatch: Sendable {
     mutating func apply(_ outcome: PoolTurnOutcome, result: PoolShotResult) -> Summary {
         let shooter = rules.shooter
         let pocketed = result.pocketed.map(\.ball).filter { $0 != 0 }
+        // What counts for the shooter is what the rules credited — not a ball
+        // of the opponent's that happened to drop, nor one re-spotted after a
+        // foul — plus the winning eight or nine, which the rules report as
+        // the game's end rather than as a credit.
+        var counted = outcome.credited
+        if let over = outcome.gameOver, over.winner == shooter {
+            for n in [8, 9] where pocketed.contains(n) && !counted.contains(n) { counted.append(n) }
+        }
         if !isPractice, pocketedBy.indices.contains(shooter) {
-            pocketedBy[shooter].append(contentsOf: pocketed)
+            pocketedBy[shooter].append(contentsOf: counted)
         }
         var finishedRun: Int?
         if shooter == PoolSeat.you && options.mode == .eightBall {
-            if outcome.foul == nil { currentRun += pocketed.filter { $0 != 8 || outcome.gameOver != nil }.count }
+            if outcome.foul == nil { currentRun += counted.count }
             if !outcome.continuesTurn || outcome.gameOver != nil {
                 finishedRun = currentRun
                 currentRun = 0
