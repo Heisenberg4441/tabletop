@@ -1,6 +1,9 @@
 //
 //  DurakTests.swift
-//  Durak's checks, for `Tabletop --selftest durak`.
+//  Durak's checks, for `Tabletop --selftest durak`: the rules and the bots
+//  first (Engine/DurakEngineTests), then the table the player plays them on
+//  (DurakPresentationTests) — whole games through the real controller,
+//  driven by clicks, drops and keys.
 //
 
 import Foundation

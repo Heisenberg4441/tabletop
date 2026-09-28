@@ -646,7 +646,8 @@ final class DurakTableView: CardTableView {
     /// clear of the opponents across the top.
     func toast(_ text: String, symbol: String? = nil, tint: NSColor = Palette.textSecondary) {
         let layout = layoutModel
-        let offset = max(bottomReserve, bounds.height - (layout.handTop - 12))
+        // Clear of a card picked up out of the hand, which rises higher still.
+        let offset = max(bottomReserve, bounds.height - (layout.handTop - selectionLift * cardSize.height - 8))
         Toast.show(text, symbolName: symbol, symbolTint: tint, in: self, placement: .bottom(offset: offset))
     }
 
