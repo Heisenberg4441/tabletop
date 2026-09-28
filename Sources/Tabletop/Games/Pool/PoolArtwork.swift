@@ -151,18 +151,29 @@ enum PoolArtwork {
         // The balls: the rack on the foot spot, apex towards the camera, and
         // the cue ball waiting. Far to near, so the nearer ones overlap.
         var balls: [(number: Int, u: CGFloat, v: CGFloat)] = []
-        // A legal eight-ball rack: the eight in the middle of the third row,
-        // and one solid and one stripe in the two back corners.
-        let order = [1, 9, 2, 10, 8, 3, 11, 4, 12, 5, 13, 6, 14, 15, 7]
-        var n = 0
-        let rowStep = ball * 2 * 0.866 * 1.01
-        for row in 0..<5 {
-            for i in 0...row {
-                balls.append((order[n], (CGFloat(i) - CGFloat(row) / 2) * ball * 2.02, 75 + CGFloat(row) * rowStep))
-                n += 1
+        // A legal eight-ball rack, row by row from the apex: the one on the
+        // spot, the eight in the middle of the third row, and — the rule a
+        // careful racker keeps — one solid and one stripe in the two back
+        // corners. Solids and stripes alternate elsewhere, so the triangle
+        // reads as a rack and not a heap.
+        let rows: [[Int]] = [
+            [1],
+            [10, 3],
+            [14, 8, 5],
+            [4, 11, 7, 13],
+            [9, 6, 15, 12, 2],
+        ]
+        // Balls just touching, a hair of gap so each keeps its own outline.
+        let pitch = ball * 2 * 1.004
+        let rowStep = pitch * 3.0.squareRoot() / 2
+        for (row, numbers) in rows.enumerated() {
+            for (i, number) in numbers.enumerated() {
+                balls.append((number, (CGFloat(i) - CGFloat(row) / 2) * pitch, 75 + CGFloat(row) * rowStep))
             }
         }
-        let cueBall = (u: CGFloat(-8.5), v: CGFloat(49))
+        // Up the table from the bottom edge, a little to the left, the cue
+        // lined up on the head ball — room below it for the cue to show.
+        let cueBall = (u: CGFloat(-5.5), v: CGFloat(56))
         balls.append((0, cueBall.u, cueBall.v))
         balls.sort { $0.v > $1.v }
 
@@ -233,97 +244,118 @@ enum PoolArtwork {
         }
     }
 
-    /// The cue, lined up on the cue ball: a maple shaft with its white
-    /// ferrule and blue tip, into an ebony butt, rising towards the camera
-    /// the way a cue is held.
+    /// The cue, lined up on the cue ball and drawn back a little, coming
+    /// up out of the bottom of the picture the way a player holds it: blue
+    /// tip, ivory ferrule, a long maple shaft thickening to a silver joint,
+    /// an ebony forearm with pale inlaid points. Each piece is lit round its
+    /// girth from the lamp's side, and the cue lays a soft shadow on the
+    /// cloth that is darkest under the tip, where it nearly touches.
     private static func paintCue(camera: Camera, from ball: (u: CGFloat, v: CGFloat), aim: (u: CGFloat, v: CGFloat),
                                  rect: CGRect, context ctx: CGContext) {
-        // Lined up on the shot: from the cue ball straight back, away from
-        // the apex of the rack.
         let dx = ball.u - aim.u, dy = ball.v - aim.v
         let norm = max(0.001, hypot(dx, dy))
-        let direction = CGVector(dx: dx / norm, dy: dy / norm)
-        // Long enough to leave the picture at the bottom, short enough that
-        // its near end stays well in front of the camera — a pinhole
-        // projection of a point almost at the lens is all but infinite.
-        let lengthOnTable: CGFloat = (ball.v - 12) / max(0.2, -direction.dy)
-        let gap: CGFloat = 3.0
-        let steps = 40
-        var top: [CGPoint] = []
-        var bottom: [CGPoint] = []
-        var centres: [CGPoint] = []
-        var shadowTop: [CGPoint] = []
-        var shadowBottom: [CGPoint] = []
-        for i in 0...steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let d = gap + t * lengthOnTable
-            let u = ball.u + direction.dx * d
-            let v = ball.v + direction.dy * d
-            let h = PoolArtwork.ball + t * 5.5
-            // A real cue swells from a 13 mm tip to a butt three times as
-            // thick; anything thinner reads, at this size, as a line.
-            let radius = 0.30 + t * 0.95
-            let center = camera.project(u: u, v: v, h: h)
-            let halfWidth = camera.focal * radius / max(0.5, camera.depth(v))
-            centres.append(center)
-            top.append(CGPoint(x: center.x - halfWidth, y: center.y))
-            bottom.append(CGPoint(x: center.x + halfWidth, y: center.y))
-            // Its shadow on the cloth, cast away from the lamp — close under
-            // the tip, where the cue is low, and further off towards the butt
-            // as it rises; narrowing to the tip like the cue itself.
-            let s = camera.project(u: u + 0.25 + t * 0.6, v: v + 0.3, h: 0)
-            let sw = halfWidth * (1.05 + t * 0.35)
-            shadowTop.append(CGPoint(x: s.x - sw, y: s.y))
-            shadowBottom.append(CGPoint(x: s.x + sw, y: s.y))
+        let back = CGVector(dx: dx / norm, dy: dy / norm)
+        // Along the cue from the tip, in table units (a real cue is about 58).
+        let gap: CGFloat = 2.4
+        // Stop well in front of the lens: a pinhole camera blows up anything
+        // right at it.
+        let reach = min(40, (ball.v - 8) / max(0.2, -back.dy))
+        func axis(_ s: CGFloat) -> (centre: CGPoint, radius: CGFloat, ground: CGPoint) {
+            let u = ball.u + back.dx * (gap + s), v = ball.v + back.dy * (gap + s)
+            // The butt is held higher than the tip: about five degrees.
+            let h = PoolArtwork.ball * 0.92 + s * 0.09
+            // 13 mm at the tip, 21 at the joint (two thirds of the way), 30
+            // at the butt — in table units, a touch over scale like the balls.
+            let t = s / 58
+            let radius = 0.40 + t * 0.72 + max(0, t - 0.62) * 1.1
+            let centre = camera.project(u: u, v: v, h: h)
+            let screen = camera.focal * radius / max(0.5, camera.depth(v))
+            let ground = camera.project(u: u + 0.35 + s * 0.02, v: v + 0.25, h: 0)
+            return (centre, screen, ground)
         }
-        func band(_ from: Int, _ to: Int) -> CGPath {
+        // The cue's direction on screen, for its outline and its shading.
+        let a = axis(0).centre, b = axis(reach).centre
+        let length = max(1, hypot(b.x - a.x, b.y - a.y))
+        let along = CGVector(dx: (b.x - a.x) / length, dy: (b.y - a.y) / length)
+        let across = CGVector(dx: -along.dy, dy: along.dx)
+
+        func band(_ s0: CGFloat, _ s1: CGFloat, scale: CGFloat = 1, useGround: Bool = false) -> CGPath {
+            let steps = max(2, Int((s1 - s0) / 0.6))
+            var left: [CGPoint] = [], right: [CGPoint] = []
+            for k in 0...steps {
+                let s = s0 + (s1 - s0) * CGFloat(k) / CGFloat(steps)
+                let p = axis(s)
+                let c = useGround ? p.ground : p.centre
+                let r = p.radius * scale
+                left.append(CGPoint(x: c.x + across.dx * r, y: c.y + across.dy * r))
+                right.append(CGPoint(x: c.x - across.dx * r, y: c.y - across.dy * r))
+            }
             let path = CGMutablePath()
-            path.addLines(between: Array(top[from...to]) + Array(bottom[from...to]).reversed())
+            path.addLines(between: left + right.reversed())
             path.closeSubpath()
             return path
         }
-        // The shadow is darkest under the tip, where the cue nearly touches
-        // the cloth, and fades out towards the butt, which is held well above
-        // it — so it reads as the cue's shadow, not a stripe of its own.
-        for i in 0..<steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let piece = CGMutablePath()
-            piece.addLines(between: [shadowTop[i], shadowTop[i + 1], shadowBottom[i + 1], shadowBottom[i]])
-            piece.closeSubpath()
-            ctx.addPath(piece)
-            ctx.setFillColor(NSColor(white: 0, alpha: 0.18 * pow(1 - t, 1.6)).cgColor)
+
+        // The shadow first, fading towards the butt, which is held high.
+        for k in 0..<24 {
+            let s0 = reach * CGFloat(k) / 24, s1 = reach * CGFloat(k + 1) / 24
+            ctx.addPath(band(s0, s1, scale: 1.25, useGround: true))
+            ctx.setFillColor(NSColor(white: 0, alpha: 0.22 * pow(1 - CGFloat(k) / 24, 1.8)).cgColor)
             ctx.fillPath()
         }
 
-        let tipEnd = 1, ferruleEnd = 2, shaftEnd = Int(CGFloat(steps) * 0.62)
-        let parts: [(Int, Int, NSColor)] = [
-            (0, tipEnd, NSColor(srgbRed: 0.24, green: 0.44, blue: 0.66, alpha: 1)),
-            (tipEnd, ferruleEnd, NSColor(white: 0.95, alpha: 1)),
-            (ferruleEnd, shaftEnd, NSColor(srgbRed: 0.86, green: 0.74, blue: 0.53, alpha: 1)),
-            (shaftEnd, shaftEnd + 1, NSColor(srgbRed: 0.93, green: 0.90, blue: 0.84, alpha: 1)),
-            (shaftEnd + 1, steps, NSColor(srgbRed: 0.13, green: 0.08, blue: 0.05, alpha: 1)),
+        let pieces: [(CGFloat, CGFloat, NSColor)] = [
+            (0, 0.45, NSColor(srgbRed: 0.22, green: 0.42, blue: 0.66, alpha: 1)),        // chalked tip
+            (0.45, 1.4, NSColor(srgbRed: 0.95, green: 0.94, blue: 0.90, alpha: 1)),      // ferrule
+            (1.4, 28.5, NSColor(srgbRed: 0.86, green: 0.74, blue: 0.54, alpha: 1)),      // maple shaft
+            (28.5, 29.4, NSColor(srgbRed: 0.84, green: 0.85, blue: 0.87, alpha: 1)),     // silver joint
+            (29.4, reach, NSColor(srgbRed: 0.10, green: 0.065, blue: 0.045, alpha: 1)),  // ebony forearm
         ]
-        for (from, to, color) in parts {
-            ctx.addPath(band(from, to))
+        for (s0, s1, color) in pieces where s0 < reach {
+            let path = band(s0, min(s1, reach))
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.clip()
             ctx.setFillColor(color.cgColor)
-            ctx.fillPath()
+            ctx.fill(path.boundingBoxOfPath)
+            // Round: lit along the lamp's side, falling into shade on the
+            // other, with a thin bright line where the lamp is reflected.
+            let mid = axis((s0 + min(s1, reach)) / 2)
+            let r = mid.radius
+            let from = CGPoint(x: mid.centre.x + across.dx * r, y: mid.centre.y + across.dy * r)
+            let to = CGPoint(x: mid.centre.x - across.dx * r, y: mid.centre.y - across.dy * r)
+            if let shade = AppleStyle.gradient([
+                (NSColor(white: 1, alpha: 0.10), 0), (NSColor(white: 1, alpha: 0.42), 0.26),
+                (NSColor(white: 1, alpha: 0.0), 0.5), (NSColor(white: 0, alpha: 0.38), 1),
+            ]) {
+                // The lamp is up and to the left: whichever edge faces it is lit.
+                let litFirst = across.dx < 0 || (across.dx == 0 && across.dy < 0)
+                ctx.drawLinearGradient(shade, start: litFirst ? from : to, end: litFirst ? to : from,
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restoreGState()
         }
-        // Round: a highlight down the side towards the lamp, starting behind
-        // the ferrule and square-ended, so it never runs past the tip as a
-        // pale cap.
-        let highlight = CGMutablePath()
-        for (i, c) in centres.enumerated() where i >= ferruleEnd {
-            let p = CGPoint(x: (c.x + top[i].x * 2) / 3, y: (c.y + top[i].y * 2) / 3)
-            if i == ferruleEnd { highlight.move(to: p) } else { highlight.addLine(to: p) }
+        // The forearm's inlaid points: four slim maple spears reaching up
+        // from the butt towards the joint (two show from this side).
+        if reach > 30 {
+            for side in [-0.45, 0.45] as [CGFloat] {
+                let tipAt = axis(29.9), baseAt = axis(min(reach, 38))
+                let path = CGMutablePath()
+                let tip = CGPoint(x: tipAt.centre.x + across.dx * tipAt.radius * side, y: tipAt.centre.y + across.dy * tipAt.radius * side)
+                let b1 = CGPoint(x: baseAt.centre.x + across.dx * baseAt.radius * (side - 0.22),
+                                 y: baseAt.centre.y + across.dy * baseAt.radius * (side - 0.22))
+                let b2 = CGPoint(x: baseAt.centre.x + across.dx * baseAt.radius * (side + 0.22),
+                                 y: baseAt.centre.y + across.dy * baseAt.radius * (side + 0.22))
+                path.addLines(between: [tip, b1, b2])
+                path.closeSubpath()
+                ctx.saveGState()
+                ctx.addPath(band(29.4, reach))
+                ctx.clip()
+                ctx.addPath(path)
+                ctx.setFillColor(NSColor(srgbRed: 0.84, green: 0.72, blue: 0.52, alpha: 0.85).cgColor)
+                ctx.fillPath()
+                ctx.restoreGState()
+            }
         }
-        ctx.saveGState()
-        ctx.addPath(band(ferruleEnd, steps))
-        ctx.clip()
-        ctx.addPath(highlight)
-        ctx.setStrokeColor(NSColor(white: 1, alpha: 0.30).cgColor)
-        ctx.setLineWidth(max(1, (bottom[steps].x - top[steps].x) * 0.12))
-        ctx.setLineCap(.butt)
-        ctx.strokePath()
-        ctx.restoreGState()
     }
 }

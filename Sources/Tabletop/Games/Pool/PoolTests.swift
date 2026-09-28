@@ -388,6 +388,6 @@ enum PoolTests {
             t.check("and the cloth is there in the picture (r \(Int(r)) g \(Int(g)) b \(Int(b)))", g > r + 30 && g > 60)
         }
         t.check("the screenshot scenarios are the ones promised",
-                PoolGame.screenshotScenarios == ["break", "aim", "top", "ballInHand", "result"])
+                PoolGame.screenshotScenarios == ["break", "aim", "top", "ballInHand", "result", "rolling"])
     }
 }

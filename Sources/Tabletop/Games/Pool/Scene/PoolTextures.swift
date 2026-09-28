@@ -402,12 +402,16 @@ enum PoolTextures {
     /// `pixelsPerMetre` dense.
     static func railImage(inner: SIMD2<Double>, outer: SIMD2<Double>, pixelsPerMetre: Double = 700) -> CGImage? {
         let W = Int(outer.x * 2 * pixelsPerMetre), H = Int(outer.y * 2 * pixelsPerMetre)
-        var bitmap = PoolBitmap(width: W, height: H)
+        var bitmap = PoolBitmap(width: W, height: H, fill: SIMD4(walnut.x, walnut.y, walnut.z, 1))
+        // Only the band the rail covers is worked out; the middle of the
+        // picture lies under the cloth and is never seen.
+        let skip = SIMD2(inner.x - 0.03, inner.y - 0.03)
         for j in 0..<H {
             for i in 0..<W {
                 // Table coordinates of the texel (image rows run from +y down).
                 let p = SIMD2((Double(i) + 0.5) / pixelsPerMetre - outer.x,
                               outer.y - (Double(j) + 0.5) / pixelsPerMetre)
+                if abs(p.x) < skip.x && abs(p.y) < skip.y { continue }
                 // Which piece: the long rails own everything nearer their
                 // edge than the mitre line through the corner.
                 let dx = outer.x - abs(p.x), dy = outer.y - abs(p.y)

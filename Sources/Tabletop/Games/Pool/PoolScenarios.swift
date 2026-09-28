@@ -9,6 +9,8 @@
 //    top         the same table from above
 //    ballInHand  after the computer's foul: the cue ball ready to be placed
 //    result      the eight just dropped, and the result banner
+//    rolling     the break a moment after the cue ball arrives, balls in
+//                flight, from the camera that follows a shot
 //
 //  Only the engine's public API is used: a rack's balls moved about, a rule
 //  state from `newGame` with its fields set, and for the result a real shot
@@ -27,7 +29,7 @@ enum PoolScenarios {
         options.difficulty = .medium
         options.guides = .long
         game.startNewGame(options, breaker: PoolSeat.you)
-        game.aimPitch = 0.31
+        game.aimPitch = 0.30
         game.aimDistance = 1.05
         if scenario != "break" { Toast.hide(in: game.root, animated: false) }
 
@@ -49,6 +51,12 @@ enum PoolScenarios {
             game.setViewMode(.aim, animated: false)
         case "result":
             playWinningEight(game)
+        case "rolling":
+            guard let cue = game.match.table.cueBall else { break }
+            let apex = game.geometry.footSpot
+            let aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
+            game.aim = aim
+            game.previewShot(PoolShot(aim: aim, power: 0.92, tipSide: 0, tipVertical: 0.1), at: 0.62)
         default:
             // The break: lined up on the head ball, a firm stroke armed.
             game.armedPower = 0.88

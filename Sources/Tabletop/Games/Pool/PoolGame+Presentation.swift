@@ -32,7 +32,7 @@ extension PoolGame {
         let aspect = Double(size.width / size.height)
         // Keep clear of the power meter and the spin control at the sides,
         // the players at the top and the action bar at the bottom.
-        let side = 172.0, band = 80.0
+        let side = 158.0, band = 74.0
         let fw = max(0.45, (Double(size.width) - 2 * side) / Double(size.width))
         let fh = max(0.45, (Double(size.height) - 2 * band) / Double(size.height))
         let d = table.dimensions
@@ -55,13 +55,16 @@ extension PoolGame {
     /// For a shot about to roll: up and back, far enough to keep every ball
     /// it will move in view — worked out from the whole recorded shot, so the
     /// camera makes one calm move instead of chasing.
-    func shotPose(for trajectory: PoolTrajectory) -> PoolCameraPose {
+    func shotPose(for trajectory: PoolTrajectory, from firstContact: Double = 0) -> PoolCameraPose {
         if viewMode == .top { return topPose() }
         let start = trajectory.poses(at: 0)
         var lo = SIMD2<Double>(repeating: .infinity), hi = SIMD2<Double>(repeating: -.infinity)
+        // From the first contact on: where the cue ball set off from is
+        // behind the camera's interest by then.
+        let from = min(max(0, firstContact), trajectory.duration)
         let steps = 60
         for i in 0...steps {
-            let t = trajectory.duration * Double(i) / Double(steps)
+            let t = from + (trajectory.duration - from) * Double(i) / Double(steps)
             for (n, pose) in trajectory.poses(at: t) {
                 let moved = start[n].map { simd_distance($0.position, pose.position) > 0.004 } ?? true
                 guard moved || n == 0 else { continue }
@@ -145,7 +148,11 @@ extension PoolGame {
         } else {
             table.guides.hide()
         }
-        table.kitchen.isHidden = !(playerHasBallInHand && match.rules.ballInHand == .kitchen)
+        // The kitchen is marked while the cue ball is being carried, or seen
+        // from above — from behind the ball the head string would only be a
+        // line through it.
+        table.kitchen.isHidden = !(playerHasBallInHand && match.rules.ballInHand == .kitchen
+                                   && (drag == .placing || viewMode == .top))
         updateBallInHandBadge()
         redraw()
     }
@@ -203,6 +210,10 @@ extension PoolGame {
         let sceneFrame = CGRect(x: 0, y: inset, width: b.width, height: max(1, b.height - inset))
         let resized = sceneView.frame.size != sceneFrame.size
         sceneView.frame = sceneFrame
+        if vignette.frame != sceneFrame {
+            vignette.frame = sceneFrame
+            vignette.needsDisplay = true
+        }
         layoutPlates()
         let middle = inset + (b.height - inset) / 2 - 12
         let meter = PoolPowerMeter.size
@@ -237,6 +248,7 @@ extension PoolGame {
             ? NSLocalizedString("Thinking…", comment: "pool: the computer is deciding") : detail(for: PoolSeat.computer)
         for (plate, player) in [(youPlate, PoolSeat.you), (computerPlate, PoolSeat.computer)] {
             guard let plate else { continue }
+            if over { plate.setBalls([]); continue }
             switch match.options.mode {
             case .eightBall:
                 plate.setBalls(match.ballsNeeded(by: player) ?? [])
@@ -297,6 +309,10 @@ extension PoolGame {
 
     /// The line under a player's name.
     private func detail(for player: Int) -> String {
+        if let winner = match.rules.winner {
+            return winner == player ? NSLocalizedString("Wins the game", comment: "pool: the winner's plate")
+                : NSLocalizedString("Game over", comment: "pool: the loser's plate")
+        }
         switch match.options.mode {
         case .eightBall:
             if let group = match.rules.groups[safe: player] ?? nil {
@@ -329,19 +345,23 @@ extension PoolGame {
     func updateBallInHandBadge() {
         guard isViewLoaded else { return }
         guard playerHasBallInHand, drag != .placing, let cue = match.table.cueBall, cue.pocket == nil,
-              let point = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: geometry.ballRadius * 2.4))
+              let centre = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: geometry.ballRadius)),
+              let top = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: geometry.ballRadius * 2))
         else {
             hideBallInHandBadge()
             return
         }
-        let at = sceneView.convert(point, to: root)
+        // A little right of the ball's own edge on screen.
+        let radius = abs(top.y - centre.y)
+        let at = sceneView.convert(CGPoint(x: centre.x + radius * 1.3 + 4, y: centre.y), to: root)
         guard root.bounds.insetBy(dx: 40, dy: 40).contains(at) else { hideBallInHandBadge(); return }
+        // Beside the ball, clear of the aiming line that runs up from it.
         if let badge = ballInHandBadge, badge.superview != nil {
-            badge.move(to: at, anchor: .above)
+            badge.move(to: at, anchor: .trailing)
         } else {
             ballInHandBadge = TableBadge.show(NSLocalizedString("Drag to place", comment: "pool badge: ball in hand"),
                                               symbolName: "arrow.up.and.down.and.arrow.left.and.right",
-                                              in: root, at: at, anchor: .above, animated: view.window != nil)
+                                              in: root, at: at, anchor: .trailing, animated: view.window != nil)
         }
     }
 

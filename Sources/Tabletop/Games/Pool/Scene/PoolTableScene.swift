@@ -71,12 +71,6 @@ final class PoolTableScene {
         applyEnvironment()
     }
 
-    /// A tuning knob read from the environment while the look is being
-    /// worked out (`POOL_SPOT=30`). TEMPORARY.
-    static func tune(_ name: String, _ fallback: CGFloat) -> CGFloat {
-        ProcessInfo.processInfo.environment["POOL_" + name].flatMap(Double.init).map { CGFloat($0) } ?? fallback
-    }
-
     // MARK: The cloth colour
 
     /// The View menu's table colour, re-dyed in place.
@@ -96,12 +90,11 @@ final class PoolTableScene {
                                           lampLength: Self.lampLength, lampWidth: Self.lampWidth, width: 1024)
         }
         scene.lightingEnvironment.contents = image.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
-        if let path = ProcessInfo.processInfo.environment["POOL_DEBUG_ENV"], let image {
-            LayerSnapshot.writePNG(image, to: path)
-            if let ball = PoolMaterials.ballImage(11) { LayerSnapshot.writePNG(ball, to: path + ".ball11.png") }
-            if let ball = PoolMaterials.ballImage(2) { LayerSnapshot.writePNG(ball, to: path + ".ball2.png") }
-        }
-        scene.lightingEnvironment.intensity = PoolTableScene.tune("ENV", 1.3)
+        // The same room behind the table, dimmer and out of focus — the
+        // walls the balls reflect, so the dark around the table has depth.
+        scene.background.contents = scene.lightingEnvironment.contents
+        scene.background.intensity = 0.45
+        scene.lightingEnvironment.intensity = 1.4
     }
 
     // MARK: The room
@@ -247,13 +240,13 @@ final class PoolTableScene {
         // The kitchen, for placing the cue ball behind the head string.
         let kitchenLength = geometry.headStringX + d.halfLength
         let plane = SCNPlane(width: CGFloat(kitchenLength), height: CGFloat(geometry.width))
-        plane.materials = [PoolMaterials.guide(.white, alpha: 0.07)]
+        plane.materials = [PoolMaterials.guide(.white, alpha: 0.035)]
         let area = SCNNode(geometry: plane)
         area.eulerAngles.x = -.pi / 2
         area.simdPosition = PoolSpace.sceneSIMD([-d.halfLength + kitchenLength / 2, 0], height: 0.0006)
         kitchen.addChildNode(area)
         let string = SCNBox(width: 0.0022, height: 0.0002, length: CGFloat(geometry.width), chamferRadius: 0)
-        string.materials = [PoolMaterials.guide(.white, alpha: 0.5)]
+        string.materials = [PoolMaterials.guide(.white, alpha: 0.32)]
         let stringNode = SCNNode(geometry: string)
         stringNode.simdPosition = PoolSpace.sceneSIMD([geometry.headStringX, 0], height: 0.0008)
         kitchen.addChildNode(stringNode)
@@ -313,9 +306,9 @@ final class PoolTableScene {
             let light = SCNLight()
             light.type = .spot
             light.color = NSColor(srgbRed: 1.0, green: 0.94, blue: 0.84, alpha: 1)
-            light.intensity = PoolTableScene.tune("SPOT", 15)
-            light.spotInnerAngle = PoolTableScene.tune("INNER", 26)
-            light.spotOuterAngle = PoolTableScene.tune("OUTER", 106)
+            light.intensity = 17
+            light.spotInnerAngle = 20
+            light.spotOuterAngle = 96
             light.attenuationStartDistance = 0.4
             light.attenuationEndDistance = 4.5
             light.attenuationFalloffExponent = 2
@@ -336,7 +329,7 @@ final class PoolTableScene {
         }
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = PoolTableScene.tune("AMBIENT", 12)
+        ambient.intensity = 12
         ambient.color = NSColor(srgbRed: 0.9, green: 0.88, blue: 0.85, alpha: 1)
         let ambientNode = SCNNode()
         ambientNode.light = ambient
@@ -367,22 +360,13 @@ final class PoolTableScene {
     }
 
     func apply(camera pose: PoolCameraPose) {
-        var pose = pose
-        // TEMPORARY: POOL_CAMERA="x,y,z,yaw°,pitch°,distance,fov" for looking closely.
-        if let raw = ProcessInfo.processInfo.environment["POOL_CAMERA"] {
-            let v = raw.split(separator: ",").compactMap { Double($0) }
-            if v.count == 7 {
-                pose = PoolCameraPose(focus: [v[0], v[1], v[2]], yaw: v[3] * .pi / 180, pitch: v[4] * .pi / 180,
-                                      distance: v[5], fieldOfView: v[6])
-            }
-        }
         cameraNode.simdPosition = SIMD3<Float>(pose.position)
         cameraNode.simdOrientation = pose.orientation
         camera.fieldOfView = CGFloat(pose.fieldOfView)
         // The lamp is over the table; a camera that climbs up past it would
         // look at the back of its hood.
         let height = pose.position.y
-        let fade = 1 - PoolTextures.smoothstep(Self.lampHeight - 0.05, Self.lampHeight + 0.35, height)
+        let fade = 1 - PoolTextures.smoothstep(Self.lampHeight + 0.35, Self.lampHeight + 0.75, height)
         lamp.opacity = CGFloat(fade)
         lamp.isHidden = fade <= 0.01
     }

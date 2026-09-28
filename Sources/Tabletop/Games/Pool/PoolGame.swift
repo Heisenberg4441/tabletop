@@ -28,7 +28,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         GameInfo(
             id: .pool,
             title: NSLocalizedString("Pool", comment: "game title"),
-            subtitle: NSLocalizedString("Eight-ball on a full-size table", comment: "pool subtitle"),
+            subtitle: NSLocalizedString("Eight-ball and nine-ball on a full-size table", comment: "pool subtitle"),
             detail: NSLocalizedString("1 player · vs computer", comment: "pool players"),
             symbolName: "8.circle.fill",
             accent: NSColor(srgbRed: 0.090, green: 0.420, blue: 0.470, alpha: 1),
@@ -110,7 +110,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var chargePower = 0.0
     var chargeSource: ChargeSource?
     /// The aim view's tilt and distance, which the player adjusts.
-    var aimPitch = 0.27
+    var aimPitch = 0.30
     var aimDistance = 1.05
     var drag: Drag = .none
     var rig = PoolCameraRig(PoolCameraPose(focus: [0, 0, 0], yaw: 0, pitch: .pi / 2, distance: 3.4, fieldOfView: 36))
@@ -148,6 +148,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var computerPlate: PoolPlayerPlate!
     let powerMeter = PoolPowerMeter()
     let spinControl = PoolSpinControl()
+    let vignette = PoolVignetteView()
     let scheduler = TableScheduler()
     var clock: PoolFrameClock!
     var optionsCard: OptionsCard?
@@ -195,6 +196,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         sceneView.pointOfView = table.cameraNode
         sceneView.input = self
         root.addSubview(sceneView)
+        root.addSubview(vignette)
 
         youPlate = PoolPlayerPlate(name: NSLocalizedString("You", comment: "pool: the player"),
                                    avatar: .symbol("person.fill"), side: .leading)
@@ -448,7 +450,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
 
     // MARK: Screenshots
 
-    static var screenshotScenarios: [String] { ["break", "aim", "top", "ballInHand", "result"] }
+    static var screenshotScenarios: [String] { ["break", "aim", "top", "ballInHand", "result", "rolling"] }
 
     func prepareForScreenshot(scenario: String?) {
         loadViewIfNeeded()
@@ -492,6 +494,29 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
 
     static func runSelfTests(_ t: TestReporter) {
         PoolTests.run(t)
+    }
+}
+
+/// The room's darkness closing in at the edges of the picture — drawn as
+/// a view over the scene rather than by the camera, so the screen and a
+/// snapshot show the same thing. Takes no clicks.
+final class PoolVignetteView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext,
+              let gradient = AppleStyle.gradient([(NSColor(white: 0, alpha: 0), 0.55), (NSColor(white: 0, alpha: 0.16), 0.8),
+                                                  (NSColor(white: 0, alpha: 0.42), 1)]) else { return }
+        let c = CGPoint(x: bounds.midX, y: bounds.midY * 0.96)
+        let r = hypot(bounds.width, bounds.height) / 2
+        ctx.saveGState()
+        // An ellipse the shape of the view, not a circle.
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.scaleBy(x: 1, y: bounds.height / max(1, bounds.width) * 1.25)
+        ctx.drawRadialGradient(gradient, startCenter: .zero, startRadius: 0, endCenter: .zero, endRadius: r,
+                               options: [.drawsAfterEndLocation])
+        ctx.restoreGState()
     }
 }
 

@@ -63,7 +63,7 @@ enum PoolMaterials {
         let m = pbr()
         m.diffuse.contents = image("cloth-\(table.rawValue)") { PoolTextures.clothImage(clothColor(table), width: 512, height: 256) }
         applyNap(m, repeat: [180, 100])
-        m.roughness.contents = PoolTableScene.tune("ROUGH", 0.9)
+        m.roughness.contents = 0.9
         // The room's light reaches the cloth only faintly; the lamp's pool
         // is what lights it, and keeps its falloff towards the rails.
         m.ambientOcclusion.contents = NSColor(white: 0.35, alpha: 1)
@@ -130,8 +130,11 @@ enum PoolMaterials {
 
     static func leather() -> SCNMaterial {
         let m = pbr()
-        m.diffuse.contents = NSColor(white: 0.035, alpha: 1)
-        m.roughness.contents = 0.5
+        m.diffuse.contents = NSColor(white: 0.03, alpha: 1)
+        m.roughness.contents = 0.62
+        // Inside a pocket the room's light hardly reaches; without this the
+        // leather mirrors the green of the cloth.
+        m.ambientOcclusion.contents = NSColor(white: 0.18, alpha: 1)
         return m
     }
 
@@ -185,11 +188,6 @@ enum PoolMaterials {
         m.roughness.contents = 0.14
         m.clearCoat.contents = 1
         m.clearCoatRoughness.contents = 0.025
-        if ProcessInfo.processInfo.environment["POOL_DEBUG_MIRROR"] != nil {
-            m.diffuse.contents = NSColor.white
-            m.metalness.contents = 1
-            m.roughness.contents = 0.0
-        }
         return m
     }
 

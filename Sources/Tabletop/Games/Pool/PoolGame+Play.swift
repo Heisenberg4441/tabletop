@@ -140,13 +140,15 @@ extension PoolGame {
             let delta = atan2(sin(shot.aim - startAim), cos(shot.aim - startAim))
             let from = abs(delta) > 0.5 ? shot.aim - 0.35 * (delta > 0 ? 1 : -1) : startAim
             aim = from
-            setCamera(aimPose(), animated: true)
+            setCamera(naturalPose(), animated: true)
             refreshAim()
             addTween(PoolTween(duration: 1.0, update: { [weak self] t in
                 guard let self else { return }
                 let d = atan2(sin(shot.aim - from), cos(shot.aim - from))
                 self.aim = from + d * t
-                self.rig.set(self.aimPose(), immediately: false)
+                // The camera follows the swing — unless the player is
+                // watching from above.
+                self.rig.set(self.naturalPose(), immediately: false)
                 self.refreshAim()
             }, completion: { drawBack() }), decorative: true)
         }
@@ -303,7 +305,7 @@ extension PoolGame {
             self.refreshAim()
         }), decorative: true)
         if let trajectory = result.trajectory {
-            setCamera(shotPose(for: trajectory), animated: true)
+            setCamera(shotPose(for: trajectory, from: Self.firstContactTime(result)), animated: true)
         }
         refreshHUD()
         if runsSynchronously || duration <= 0 {
@@ -311,6 +313,32 @@ extension PoolGame {
         } else {
             requestFrames()
         }
+    }
+
+    /// Shows `shot` `time` seconds in, from the camera that follows it, and
+    /// changes nothing else — for a screenshot of balls in flight.
+    func previewShot(_ shot: PoolShot, at time: Double) {
+        let result = PoolPhysics.simulate(shot, from: match.table, geometry: geometry, record: true)
+        guard let trajectory = result.trajectory else { return }
+        phase = .rolling
+        cueVisible = false
+        guides(hidden: true)
+        hideBallInHandBadge()
+        table.apply(poses: trajectory.poses(at: min(time, trajectory.duration)))
+        setCamera(shotPose(for: trajectory, from: Self.firstContactTime(result)), animated: false)
+        refreshAim()
+        refreshHUD()
+    }
+
+    /// When the cue ball first meets anything, from the engine's event log.
+    static func firstContactTime(_ result: PoolShotResult) -> Double {
+        for event in result.events {
+            switch event {
+            case .ballBall(_, _, let time), .cushion(_, let time): return time
+            case .pocketed: continue
+            }
+        }
+        return 0
     }
 
     // MARK: The frame
@@ -456,19 +484,12 @@ extension PoolGame {
     private func showResult(_ summary: PoolMatch.Summary) {
         guard let over = summary.gameOver else { return }
         let win = over.winner == PoolSeat.you
-        let difficulty = match.options.difficulty
-        let record = String(format: NSLocalizedString("%1$@ of %2$@ on %3$@", comment: "pool result: wins of games on difficulty"),
-                            Plural.format(statistics.wins(difficulty), one: NSLocalizedString("%d win", comment: "pool statistics, one win"),
-                                          other: NSLocalizedString("%d wins", comment: "pool statistics, wins")),
-                            Plural.format(statistics.games(difficulty), one: NSLocalizedString("%d game", comment: "pool statistics, one game"),
-                                          other: NSLocalizedString("%d games", comment: "pool statistics, games")),
-                            PoolEngineText.difficulty(difficulty))
         let reason = PoolEngineText.gameOver(over.reason, winnerIsYou: win, opponent: match.opponentName)
         Banner.show(
             in: root,
             title: win ? NSLocalizedString("You win", comment: "pool result")
                 : String(format: NSLocalizedString("%@ wins", comment: "pool result: the computer won"), match.opponentName),
-            subtitle: reason + "  ·  " + record,
+            subtitle: reason,
             symbolName: win ? "trophy.fill" : "flag.fill",
             tone: win ? .win : .loss,
             actions: [
