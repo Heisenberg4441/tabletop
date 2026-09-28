@@ -95,8 +95,14 @@ enum PoolEngineTests {
         t.check("the kitchen is behind the head string",
                 g.kitchenContains(SIMD2(-0.9, 0)) && !g.kitchenContains(SIMD2(-0.5, 0))
                     && !g.kitchenContains(SIMD2(-1.27, 0)))
-        t.check("cushion outlines are four-point polygons", g.cushionOutlines.count == 6
-                    && g.cushionOutlines.allSatisfy { $0.count == 4 })
+        func area(_ o: [SIMD2<Double>]) -> Double {
+            o.indices.reduce(0) { sum, k in
+                let a = o[k], b = o[(k + 1) % o.count]
+                return sum + (a.x * b.y - b.x * a.y) / 2
+            }
+        }
+        t.check("cushion outlines are counter-clockwise four-point polygons of real rubber",
+                g.cushionOutlines.count == 6 && g.cushionOutlines.allSatisfy { $0.count == 4 && area($0) > 0.002 })
         // The y-up frame: table up is scene up, and a turn converts to the
         // same turn of the converted vectors.
         let turn = simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(0.3, -0.5, 0.8)))

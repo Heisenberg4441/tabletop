@@ -229,7 +229,9 @@ struct PoolTableGeometry: Sendable {
             cushions.append(PoolCushionSegment(a: backA, b: tipA, openSide: from.center, kind: .jaw, rail: rail))
             cushions.append(PoolCushionSegment(a: tipA, b: tipB, openSide: .zero, kind: .nose, rail: rail))
             cushions.append(PoolCushionSegment(a: tipB, b: backB, openSide: to.center, kind: .jaw, rail: rail))
-            outlines.append([backA, tipA, tipB, backB])
+            // Seen from above the chain runs clockwise round the rubber;
+            // outlines are given counter-clockwise.
+            outlines.append([backB, tipB, tipA, backA])
             tips.append(tipA)
             tips.append(tipB)
         }
