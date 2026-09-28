@@ -104,7 +104,7 @@ final class PoolTableScene {
         // The same room behind the table, dimmer and out of focus — the
         // walls the balls reflect, so the dark around the table has depth.
         scene.background.contents = scene.lightingEnvironment.contents
-        scene.background.intensity = 0.45
+        scene.background.intensity = 0.3
         scene.lightingEnvironment.intensity = 1.4
     }
 
@@ -161,23 +161,27 @@ final class PoolTableScene {
         // its outside edge and running down into the apron.
         let railOuter = PoolShapes.roundedRectangle(d.outerX, d.outerY, radius: 0.045)
         let railInner = PoolShapes.railInnerBoundary(d)
-        let top = PoolMaterials.railTop(d), side = PoolMaterials.railSide()
+        // The top and its rounded edge are varnished walnut under the lamp;
+        // the apron below faces the dark room, and is drawn as wood in shade
+        // (lit by the room's environment it would mirror the cloth).
+        let top = PoolMaterials.railTop(d), side = PoolMaterials.woodInShadow()
         let rail = PoolShapes.extrusion([railOuter, railInner], bottom: -0.17, top: d.railTop, chamfer: 0.014,
-                                        materials: [top, side, side, side, side])
+                                        materials: [top, side, side, top, side])
         rail.name = "rail"
         table.addChildNode(rail)
 
         // The cabinet under the rail, and its legs, standing on the floor.
         let cabinetBox = SCNBox(width: CGFloat(d.outerX * 2 - 0.16), height: 0.36, length: CGFloat(d.outerY * 2 - 0.16),
                                 chamferRadius: 0.02)
-        cabinetBox.materials = [side]
+        let shaded = PoolMaterials.woodInShadow()
+        cabinetBox.materials = [shaded]
         let cabinet = SCNNode(geometry: cabinetBox)
         cabinet.position.y = -0.17 - 0.18
         table.addChildNode(cabinet)
         for sx in [-1.0, 0, 1] {
             for sy in [-1.0, 1] {
                 let leg = SCNBox(width: 0.16, height: 0.26, length: 0.16, chamferRadius: 0.015)
-                leg.materials = [side]
+                leg.materials = [shaded]
                 let node = SCNNode(geometry: leg)
                 node.position = SCNVector3(CGFloat(sx * (d.outerX - 0.2)), -0.53 - 0.13, CGFloat(-sy * (d.outerY - 0.2)))
                 table.addChildNode(node)
@@ -374,10 +378,12 @@ final class PoolTableScene {
         cameraNode.simdPosition = SIMD3<Float>(pose.position)
         cameraNode.simdOrientation = pose.orientation
         camera.fieldOfView = CGFloat(pose.fieldOfView)
-        // The lamp is over the table; a camera that climbs up past it would
-        // look at the back of its hood.
+        // The lamp hangs over the table; from any camera high enough to see
+        // it at all it shows only the edge of its hood at the top of the
+        // picture, so it steps out of the way once the camera nears its
+        // height (its light and its reflection in the balls stay).
         let height = pose.position.y
-        let fade = 1 - PoolTextures.smoothstep(Self.lampHeight + 0.35, Self.lampHeight + 0.75, height)
+        let fade = 1 - PoolTextures.smoothstep(Self.lampHeight - 0.2, Self.lampHeight - 0.05, height)
         lamp.opacity = CGFloat(fade)
         lamp.isHidden = fade <= 0.01
     }

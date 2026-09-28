@@ -116,6 +116,17 @@ extension PoolGame {
 
     func resumeComputerTurn() { proceedWithComputerTurn() }
 
+    /// The computer's turn as it looks while it thinks, without asking it
+    /// anything — for a screenshot.
+    func showThinking() {
+        phase = .thinking
+        cueVisible = false
+        guides(hidden: true)
+        setCamera(watchPose(), animated: false)
+        refreshAim()
+        refreshHUD()
+    }
+
     private func proceedWithComputerTurn() {
         guard phase == .thinking, thinkingTimeUp, let decision, !scheduler.isSuspended || runsSynchronously else { return }
         playComputerShot(decision)

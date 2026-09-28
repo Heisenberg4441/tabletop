@@ -11,6 +11,8 @@
 //    result      the eight just dropped, and the result banner
 //    rolling     the break a moment after the cue ball arrives, balls in
 //                flight, from the camera that follows a shot
+//    thinking    the computer's turn: its seat sweeping gold while it
+//                decides, the camera watching over its shoulder
 //
 //  Only the engine's public API is used: a rack's balls moved about, a rule
 //  state from `newGame` with its fields set, and for the result a real shot
@@ -51,6 +53,16 @@ enum PoolScenarios {
             game.setViewMode(.aim, animated: false)
         case "result":
             playWinningEight(game)
+        case "thinking":
+            var table = midGame()
+            move(&table, 0, to: [0.62, 0.30])
+            game.match.table = table
+            game.match.rules.isBreakShot = false
+            game.match.rules.groups = [.solids, .stripes]
+            game.match.rules.shooter = PoolSeat.computer
+            game.match.rules.ballInHand = nil
+            game.table.apply(table: table)
+            game.showThinking()
         case "rolling":
             guard let cue = game.match.table.cueBall else { break }
             let apex = game.geometry.footSpot

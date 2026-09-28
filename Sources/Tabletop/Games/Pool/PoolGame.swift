@@ -457,7 +457,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
 
     // MARK: Screenshots
 
-    static var screenshotScenarios: [String] { ["break", "aim", "top", "ballInHand", "result", "rolling"] }
+    static var screenshotScenarios: [String] { ["break", "aim", "top", "ballInHand", "result", "rolling", "thinking"] }
 
     func prepareForScreenshot(scenario: String?) {
         loadViewIfNeeded()

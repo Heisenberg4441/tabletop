@@ -232,14 +232,10 @@ final class PoolGuideNodes {
 
         let sphere = SCNSphere(radius: CGFloat(radius))
         sphere.segmentCount = 48
-        // A ghost of the cue ball: lit like glass, so it reads as a ball
-        // rather than a disc, and faint enough to see the object ball through.
-        let glass = PoolMaterials.pbr()
-        glass.diffuse.contents = NSColor(white: 1, alpha: 1)
-        glass.roughness.contents = 0.25
-        glass.transparency = 0.17
-        glass.blendMode = .alpha
-        glass.writesToDepthBuffer = false
+        // A ghost of the cue ball, faint enough to see the object ball
+        // through; the ring on the cloth under it says where it stands.
+        let glass = PoolMaterials.guide(.white, alpha: 0.2)
+        glass.readsFromDepthBuffer = true
         sphere.materials = [glass]
         ghost = SCNNode(geometry: sphere)
         ghost.castsShadow = false

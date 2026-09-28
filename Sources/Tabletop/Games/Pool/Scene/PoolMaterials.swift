@@ -103,10 +103,26 @@ enum PoolMaterials {
 
     static func railSide() -> SCNMaterial {
         let m = varnishedWood()
+        // The apron faces the dark room, not the cloth the lighting
+        // environment is painted with below its horizon.
+        m.clearCoat.contents = 0.25
+        m.ambientOcclusion.contents = NSColor(white: 0.18, alpha: 1)
         m.diffuse.contents = image("wood") { PoolTextures.woodImage(width: 512, height: 128) }
         m.diffuse.wrapS = .repeat
         m.diffuse.wrapT = .repeat
         m.diffuse.contentsTransform = SCNMatrix4MakeScale(18, 1, 1)
+        return m
+    }
+
+    /// The cabinet and legs under the rail, which the lamp never reaches:
+    /// dark wood, unlit, so the room's light cannot tint it.
+    static func woodInShadow() -> SCNMaterial {
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = image("wood") { PoolTextures.woodImage(width: 512, height: 128) }
+        m.diffuse.wrapS = .repeat
+        m.diffuse.wrapT = .repeat
+        m.multiply.contents = NSColor(white: 0.22, alpha: 1)
         return m
     }
 

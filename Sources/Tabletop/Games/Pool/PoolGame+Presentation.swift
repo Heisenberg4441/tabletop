@@ -47,9 +47,9 @@ extension PoolGame {
         var toCentre = -cue
         if simd_length(toCentre) < 0.2 { toCentre = [1, 0] }
         let a = atan2(toCentre.y, toCentre.x)
-        let focus = cue * 0.45
+        let focus = cue * 0.3
         return PoolCameraPose(focus: [focus.x, 0, -focus.y], yaw: PoolCameraPose.yaw(forAim: a),
-                              pitch: 0.74, distance: 2.3, fieldOfView: 40)
+                              pitch: 0.33, distance: 3.1, fieldOfView: 40)
     }
 
     /// For a shot about to roll: up and back, far enough to keep every ball
