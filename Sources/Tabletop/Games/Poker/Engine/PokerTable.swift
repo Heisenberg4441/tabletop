@@ -285,6 +285,7 @@ struct PokerTable: Codable, Equatable, Sendable {
     /// Players in the hand still to act after `seat` this round, in order —
     /// a bot's sense of position.
     func seatsStillToAct(after seat: Int) -> [Int] {
+        guard players.count > 1, players.indices.contains(seat) else { return [] }
         var result: [Int] = []
         var s = seat
         for _ in 0..<(players.count - 1) {
