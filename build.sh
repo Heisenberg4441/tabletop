@@ -89,6 +89,13 @@ for spec in "16:icon_16x16" "32:icon_16x16@2x" "32:icon_32x32" "64:icon_32x32@2x
   sips -z "$size" "$size" "build/icon-1024.png" --out "${ICONSET}/${name}.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "${CONTENTS}/Resources/AppIcon.icns"
+
+echo "==> Copying translations"
+# The Russian tables are generated from Tools/l10n/*.json, and regenerating
+# them here also checks that every string in the source has a translation — a
+# missing one would otherwise show up as a stray English word in the app.
+python3 Tools/l10n/build-strings.py
+cp -R Resources/*.lproj "${CONTENTS}/Resources/"
 rm -rf "$ICONSET"
 
 cat > "${CONTENTS}/Info.plist" <<PLIST
@@ -97,6 +104,7 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>en</string>
+	<key>CFBundleLocalizations</key><array><string>en</string><string>ru</string></array>
 	<key>CFBundleExecutable</key><string>${APP_NAME}</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>

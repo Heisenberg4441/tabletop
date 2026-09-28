@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>%d cards face down</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d карты рубашкой вверх</string>
+			<key>many</key>
+			<string>%d карт рубашкой вверх</string>
+			<key>one</key>
+			<string>%d карта рубашкой вверх</string>
+			<key>other</key>
+			<string>%d карты рубашкой вверх</string>
+		</dict>
+	</dict>
+	<key>%d decks</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d колоды</string>
+			<key>many</key>
+			<string>%d колод</string>
+			<key>one</key>
+			<string>%d колода</string>
+			<key>other</key>
+			<string>%d колоды</string>
+		</dict>
+	</dict>
+	<key>%d moves</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d хода</string>
+			<key>many</key>
+			<string>%d ходов</string>
+			<key>one</key>
+			<string>%d ход</string>
+			<key>other</key>
+			<string>%d хода</string>
+		</dict>
+	</dict>
+</dict>
+</plist>
