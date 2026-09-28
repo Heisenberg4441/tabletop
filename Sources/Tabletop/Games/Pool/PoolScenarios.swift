@@ -17,6 +17,8 @@
 //  `--pool-at SECONDS` stops the two shots — the break in "rolling", the
 //  winning eight in "result" — at that moment of their recorded playback,
 //  to look at a ball in flight or dropping into its pocket.
+//  `--pool-mode nineBall|practice` racks that game instead of eight-ball
+//  for "break" and "rolling".
 //
 //  Only the engine's public API is used: a rack's balls moved about, a rule
 //  state from `newGame` with its fields set, and for the result a real shot
@@ -32,6 +34,10 @@ enum PoolScenarios {
     static func prepare(_ game: PoolGame, scenario: String) {
         var options = PoolOptions()
         options.mode = .eightBall
+        if ["break", "rolling"].contains(scenario),
+           let mode = TabletopEnvironment.value(of: "--pool-mode").flatMap(PoolMode.init(rawValue:)) {
+            options.mode = mode
+        }
         options.difficulty = .medium
         options.guides = .long
         game.startNewGame(options, breaker: PoolSeat.you)
@@ -69,7 +75,7 @@ enum PoolScenarios {
             game.showThinking()
         case "rolling":
             guard let cue = game.match.table.cueBall else { break }
-            let apex = game.geometry.footSpot
+            let apex = apexBall(game)
             let aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
             game.aim = aim
             game.previewShot(PoolShot(aim: aim, power: PoolGame.breakPower, tipSide: 0, tipVertical: -0.15),
@@ -77,7 +83,7 @@ enum PoolScenarios {
         default:
             // The break: lined up on the head ball, the break stroke armed.
             if let cue = game.match.table.cueBall {
-                let apex = game.geometry.footSpot
+                let apex = apexBall(game)
                 game.aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
             }
             game.setViewMode(.aim, animated: false)
@@ -85,6 +91,13 @@ enum PoolScenarios {
         game.refreshAim()
         game.refreshHUD()
         game.applyCamera()
+    }
+
+    /// The rack's head ball — the one on the foot spot — where a break aims.
+    static func apexBall(_ game: PoolGame) -> SIMD2<Double> {
+        let foot = game.geometry.footSpot
+        return game.match.table.balls.filter { $0.number != 0 && $0.pocket == nil }
+            .min { simd_distance($0.position, foot) < simd_distance($1.position, foot) }?.position ?? foot
     }
 
     /// `--pool-at`: a moment of a shot's playback to stop at, in seconds.
