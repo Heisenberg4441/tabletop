@@ -4,15 +4,24 @@
 //  the same every time and says one thing clearly — whatever the engine's
 //  physics happen to do on a given break.
 //
-//    break       the rack, from behind the cue ball, lined up on the apex
-//    aim         mid-game, a cut into the corner with the guides and some spin
-//    top         the same table from above
-//    ballInHand  after the computer's foul: the cue ball ready to be placed
-//    result      the eight just dropped, and the result banner
-//    rolling     the break a moment after the cue ball arrives, balls in
-//                flight, from the camera that follows a shot
-//    thinking    the computer's turn: its seat sweeping gold while it
-//                decides, the camera watching over its shoulder
+//    break         the rack, from behind the cue ball, lined up on the apex,
+//                  with the first-time hints a new player sees
+//    aim           mid-game, a cut into the corner with the guides and some spin
+//    top           the same table from above
+//    ball-in-hand  after the computer's foul: the cue ball ready to be placed
+//    placing       the break's cue ball being carried past the head string,
+//                  where it may not go: the red stand-in, the kitchen marked
+//    result        the eight just dropped, and the result banner
+//    rolling       the break a moment after the cue ball arrives, balls in
+//                  flight, from the camera that follows a shot
+//    thinking      the computer's turn: its seat sweeping gold while it
+//                  decides, the camera watching over its shoulder, the lamp
+//                  hanging over the table
+//    rail          the cue ball frozen to the head cushion: the cue raised
+//                  over the rail and the camera above it, the shot in view
+//    corner        the cue ball in a corner, the same
+//    ball-behind   a ball right behind the cue ball: the cue steep over it,
+//                  the camera up with it
 //
 //  `--pool-at SECONDS` stops the two shots — the break in "rolling", the
 //  winning eight in "result" — at that moment of their recorded playback,
@@ -40,6 +49,11 @@ enum PoolScenarios {
         }
         options.difficulty = .medium
         options.guides = .long
+        // The first-time hints belong to the first picture only.
+        if scenario != "break" {
+            game.options.hasAimed = true
+            game.options.hasShot = true
+        }
         game.startNewGame(options, breaker: PoolSeat.you)
         game.aimPitch = 0.30
         game.aimDistance = 1.05
@@ -53,7 +67,32 @@ enum PoolScenarios {
             game.armedPower = 0.46
             game.powerMeter.armedPower = 0.46
             game.setViewMode(scenario == "top" ? .top : .aim, animated: false)
-        case "ballInHand":
+        case "rail", "corner", "ball-behind":
+            var table = midGame()
+            switch scenario {
+            case "rail": move(&table, 0, to: [-game.geometry.length / 2 + game.geometry.ballRadius + 0.0004, 0.1])
+            case "corner": move(&table, 0, to: [-1.20, -0.57])
+            default: break
+            }
+            setUp(game, table: table, shooter: PoolSeat.you, ballInHand: nil)
+            aim(game, at: 3, into: 3)
+            if scenario == "ball-behind", let cue = game.match.table.cueBall {
+                // The 12 a hair behind the cue ball, dead on the line.
+                let behind = cue.position - PoolSpace.tableDirection(game.aim) * (2 * game.geometry.ballRadius + 0.004)
+                move(&game.match.table, 12, to: behind)
+                game.table.apply(table: game.match.table)
+            }
+            game.setViewMode(.aim, animated: false)
+        case "placing":
+            // Carried from the break spot towards the rack, over the line.
+            game.setViewMode(.aim, animated: false)
+            game.drag = .placing
+            game.dragValidSpot = game.match.table.cueBall?.position
+            game.hideBallInHandBadge()
+            game.carryCueBall(toward: [-0.36, 0.16])
+            game.aimPitch = 0.5
+            game.setCamera(game.aimPose(), animated: false)
+        case "ball-in-hand":
             var table = midGame()
             move(&table, 0, to: [-0.35, -0.02])
             setUp(game, table: table, shooter: PoolSeat.you, ballInHand: true)

@@ -17,6 +17,8 @@ extension PoolGame: PoolSceneViewInput {
     func poolMouseDown(_ event: NSEvent, at point: CGPoint) {
         guard isPlayersTurn, phase == .aiming else { drag = .none; return }
         dragLast = point
+        dragStart = point
+        dragMoved = false
         if playerHasBallInHand, isOverCueBall(point) {
             drag = .placing
             dragValidSpot = match.table.cueBall?.position
@@ -40,6 +42,7 @@ extension PoolGame: PoolSceneViewInput {
 
     func poolMouseDragged(_ event: NSEvent, at point: CGPoint) {
         defer { dragLast = point }
+        if hypot(point.x - dragStart.x, point.y - dragStart.y) > 3 { dragMoved = true }
         switch drag {
         case .none:
             return
@@ -49,10 +52,12 @@ extension PoolGame: PoolSceneViewInput {
             // Right turns the cue right (clockwise from above); pulling the
             // table down lifts the camera.
             aim -= dx * (fine ? 0.00045 : 0.0042)
-            aimPitch = max(0.07, min(1.35, aimPitch - dy * (fine ? 0.0006 : 0.0042)))
-            setCamera(aimPose(), animated: false)
+            aimPitch = max(0.07, min(Self.highestAimPitch, aimPitch - dy * (fine ? 0.0006 : 0.0042)))
+            if dragMoved { learned(aimed: true) }
+            setCamera(aimPose(), animated: false, following: true)
             refreshAim()
         case .aimAtPointer:
+            if dragMoved { learned(aimed: true) }
             aimAtPointer(point)
         case .placing:
             carryCueBall(to: point)
@@ -61,17 +66,35 @@ extension PoolGame: PoolSceneViewInput {
 
     func poolMouseUp(_ event: NSEvent, at point: CGPoint) {
         let was = drag
-        drag = .none
-        if was == .placing {
-            table.placementGhost.isHidden = true
-            table.placementRing.isHidden = true
-            if let spot = dragValidSpot { moveCueBall(to: spot) }
-            dragValidSpot = nil
-            if viewMode == .aim { setCamera(aimPose(), animated: true) }
+        endDrag()
+        // A click on a ball, from behind the cue ball, aims straight at it
+        // (from above, any click aims at its point already).
+        if was == .orbit, !dragMoved, isPlayersTurn, phase == .aiming, let target = ball(under: point),
+           let cue = match.table.cueBall {
+            let d = target - cue.position
+            aim = atan2(d.y, d.x)
+            setCamera(aimPose(), animated: true)
             refreshAim()
-            refreshHUD()
         }
         redraw()
+    }
+
+    /// Ends whatever the mouse was doing. A cue ball being carried is put
+    /// down on the last spot it was allowed — also when the drag is cut
+    /// short by the window going, a new game or a stroke.
+    func endDrag() {
+        let was = drag
+        drag = .none
+        guard was == .placing else { return }
+        table.placementGhost.isHidden = true
+        table.placementDeny.isHidden = true
+        table.placementRing.isHidden = true
+        updateDenyBadge()
+        if let spot = dragValidSpot { moveCueBall(to: spot) }
+        dragValidSpot = nil
+        if viewMode == .aim && isPlayersTurn { setCamera(aimPose(), animated: true) }
+        refreshAim()
+        refreshHUD()
     }
 
     func poolScroll(_ event: NSEvent) {
@@ -86,8 +109,8 @@ extension PoolGame: PoolSceneViewInput {
     }
 
     private func zoom(by factor: Double) {
-        aimDistance = max(0.42, min(2.6, aimDistance * factor))
-        if phase == .aiming || phase == .charging { setCamera(aimPose(), animated: false) }
+        aimDistance = max(0.42, min(Self.farthestAim, aimDistance * factor))
+        if phase == .aiming || phase == .charging { setCamera(aimPose(), animated: false, following: true) }
         redraw()
     }
 
@@ -108,7 +131,8 @@ extension PoolGame: PoolSceneViewInput {
             guard isPlayersTurn, phase == .aiming else { return true }
             let step = (event.modifierFlags.contains(.shift) ? 0.05 : 0.3) * Double.pi / 180
             aim += event.keyCode == 123 ? step : -step
-            if viewMode == .aim { setCamera(aimPose(), animated: false) }
+            learned(aimed: true)
+            if viewMode == .aim { setCamera(aimPose(), animated: false, following: true) }
             refreshAim()
             return true
         case 125, 126:                                             // ↓ ↑
@@ -138,6 +162,39 @@ extension PoolGame: PoolSceneViewInput {
         return hypot(point.x - centre.x, point.y - centre.y) <= radius
     }
 
+    /// Says, over the red stand-in, why the cue ball may not go there.
+    func updateDenyBadge() {
+        guard drag == .placing, !table.placementGhost.isHidden,
+              let c = sceneView.screenPoint(of: table.placementGhost.simdPosition + [0, Float(geometry.ballRadius), 0])
+        else {
+            denyBadge?.hide(animated: false)
+            denyBadge = nil
+            return
+        }
+        let at = sceneView.convert(c, to: root)
+        let past = PoolSpace.table(table.placementGhost.simdPosition).x > geometry.headStringX
+        let text = match.rules.ballInHand == .kitchen && past
+            ? NSLocalizedString("Behind the line only", comment: "pool badge: the break's cue ball must stay in the kitchen")
+            : NSLocalizedString("Not on another ball", comment: "pool badge: the cue ball may not be put on a ball")
+        if let badge = denyBadge, badge.superview != nil {
+            badge.update(text: text, symbolName: "xmark", tone: .loss)
+            badge.move(to: at, anchor: .above)
+        } else {
+            denyBadge = TableBadge.show(text, symbolName: "xmark", tone: .loss, in: root, at: at, anchor: .above,
+                                        animated: false)
+        }
+    }
+
+    /// The object ball under `point` on screen, if any: where the ray under
+    /// it meets the plane through the balls' centres, within a ball's width.
+    private func ball(under point: CGPoint) -> SIMD2<Double>? {
+        let R = geometry.ballRadius
+        guard let p = sceneView.tablePoint(under: point, height: R) else { return nil }
+        return match.table.balls
+            .filter { $0.number != 0 && $0.pocket == nil && simd_distance($0.position, p) < R * 1.3 }
+            .min { simd_distance($0.position, p) < simd_distance($1.position, p) }?.position
+    }
+
     private func aimAtPointer(_ point: CGPoint) {
         guard let cue = match.table.cueBall,
               let p = sceneView.tablePoint(under: point, height: geometry.ballRadius) else { return }
@@ -153,11 +210,17 @@ extension PoolGame: PoolSceneViewInput {
     /// shows where the pointer is. Every spot it stops on is one
     /// `PoolRules.isValidPlacement` accepts.
     private func carryCueBall(to point: CGPoint) {
+        guard let p = sceneView.tablePoint(under: point, height: geometry.ballRadius) else { return }
+        carryCueBall(toward: p)
+    }
+
+    /// The same, for a point on the cloth.
+    func carryCueBall(toward p: SIMD2<Double>) {
         let R = geometry.ballRadius
-        guard let p = sceneView.tablePoint(under: point, height: R) else { return }
         if let spot = slidePlacement(toward: p), simd_distance(spot, p) < 4 * R {
             dragValidSpot = spot
             table.placementGhost.isHidden = true
+            table.placementDeny.isHidden = true
             moveCueBall(to: spot)
             table.placementRing.isHidden = false
             table.placementRing.simdPosition = PoolSpace.sceneSIMD(spot, height: 0.0008)
@@ -166,8 +229,11 @@ extension PoolGame: PoolSceneViewInput {
                               max(-geometry.width / 2 + R, min(geometry.width / 2 - R, p.y)))
             table.placementGhost.isHidden = false
             table.placementGhost.simdPosition = PoolSpace.sceneSIMD(shown, height: R)
+            table.placementDeny.isHidden = false
+            table.placementDeny.simdPosition = PoolSpace.sceneSIMD(shown, height: 0.0008)
             table.placementRing.isHidden = true
         }
+        updateDenyBadge()
         redraw()
     }
 }

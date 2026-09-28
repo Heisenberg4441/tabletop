@@ -21,7 +21,7 @@ final class PoolSpinControl: NSView {
     var isEnabled = true { didSet { if isEnabled != oldValue { face.needsDisplay = true; alphaValue = isEnabled ? 1 : 0.55 } } }
     var onChange: ((Double, Double) -> Void)?
 
-    static let size = CGSize(width: 128, height: 128)
+    static let size = CGSize(width: 108, height: 108)
 
     private let panel = GlassPanel(capsule: true)
     private let face = PoolSpinFace()

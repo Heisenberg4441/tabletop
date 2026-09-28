@@ -101,6 +101,22 @@ struct PoolCameraRig {
         if immediately { snap() }
     }
 
+    /// Follows `pose` exactly — a drag the camera must keep up with — except
+    /// for a jump in pitch, which glides: when the cue has to be lifted over
+    /// a ball behind it and the camera with it, the view rises calmly
+    /// instead of leaping while the aim turns.
+    mutating func follow(_ pose: PoolCameraPose) {
+        // The same for the distance the camera stands back to keep the shot
+        // in view, and for a wheel's notch of zoom.
+        let glidePitch = abs(pose.pitch - pitch.value) > 0.03 || !pitch.isSettled(at: goal.pitch, tolerance: 5e-4)
+        let glideDistance = abs(pose.distance - distance.value) > 0.08
+            || !distance.isSettled(at: goal.distance, tolerance: 5e-4)
+        let (p, d) = (pitch, distance)
+        set(pose, immediately: true)
+        if glidePitch { pitch = p }
+        if glideDistance { distance = d }
+    }
+
     /// Advances by `dt` seconds. Returns true while still moving.
     @discardableResult
     mutating func step(_ dt: Double) -> Bool {

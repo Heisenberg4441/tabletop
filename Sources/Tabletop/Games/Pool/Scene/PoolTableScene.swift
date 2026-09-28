@@ -33,8 +33,9 @@ final class PoolTableScene {
     /// placed only there.
     let kitchen = SCNNode()
     /// The cue ball's translucent stand-in while it is dragged somewhere it
-    /// may not go.
+    /// may not go, and the red ring on the cloth under it.
     let placementGhost: SCNNode
+    let placementDeny: SCNNode
     /// A ring on the cloth under the cue ball while it is carried somewhere
     /// it may go.
     let placementRing: SCNNode
@@ -54,19 +55,29 @@ final class PoolTableScene {
         cushionMaterial = PoolMaterials.cushionCloth(cloth)
         guides = PoolGuideNodes(radius: geometry.ballRadius)
 
+        // A see-through ball, lit and shaded like the balls round it so it
+        // reads as a ball on the cloth, tinted red; and a red ring under it,
+        // which still says "not here" over a red ball.
         let ghostSphere = SCNSphere(radius: CGFloat(geometry.ballRadius))
         ghostSphere.segmentCount = 48
-        ghostSphere.materials = [PoolMaterials.guide(Palette.negative, alpha: 0.45)]
+        ghostSphere.materials = [PoolMaterials.deniedBall()]
         placementGhost = SCNNode(geometry: ghostSphere)
         placementGhost.isHidden = true
         placementGhost.castsShadow = false
-        let ring = SCNTube(innerRadius: CGFloat(geometry.ballRadius * 1.25), outerRadius: CGFloat(geometry.ballRadius * 1.25 + 0.0018),
-                           height: 0.0003)
-        ring.radialSegmentCount = 64
-        ring.materials = [PoolMaterials.guide(Palette.positive, alpha: 0.8)]
-        placementRing = SCNNode(geometry: ring)
-        placementRing.isHidden = true
-        placementRing.castsShadow = false
+        placementGhost.opacity = 0.5
+        placementGhost.renderingOrder = 12
+        func ring(_ color: NSColor) -> SCNNode {
+            let tube = SCNTube(innerRadius: CGFloat(geometry.ballRadius * 1.25),
+                               outerRadius: CGFloat(geometry.ballRadius * 1.25 + 0.0018), height: 0.0003)
+            tube.radialSegmentCount = 64
+            tube.materials = [PoolMaterials.guide(color, alpha: 0.85)]
+            let node = SCNNode(geometry: tube)
+            node.isHidden = true
+            node.castsShadow = false
+            return node
+        }
+        placementDeny = ring(Palette.negative)
+        placementRing = ring(Palette.positive)
 
         scene.background.contents = Palette.room
         buildRoom()
@@ -78,6 +89,7 @@ final class PoolTableScene {
         scene.rootNode.addChildNode(cue.node)
         scene.rootNode.addChildNode(guides.node)
         scene.rootNode.addChildNode(placementGhost)
+        scene.rootNode.addChildNode(placementDeny)
         scene.rootNode.addChildNode(placementRing)
         applyEnvironment()
     }
@@ -105,19 +117,32 @@ final class PoolTableScene {
         // walls the balls reflect, so the dark around the table has depth.
         scene.background.contents = scene.lightingEnvironment.contents
         scene.background.intensity = 0.3
-        scene.lightingEnvironment.intensity = 1.4
+        scene.lightingEnvironment.intensity = Self.environmentIntensity
     }
+
+    /// How strongly the room lights and is mirrored in everything. The lamp
+    /// is what lights the table; the room only has to give the balls their
+    /// reflections and keep their shaded sides from going black.
+    static let environmentIntensity: CGFloat = 0.95
 
     // MARK: The room
 
+    /// The floor: dark boards under the table, fading into the dark of the
+    /// room a few metres out. An endless floor would meet the room at a
+    /// hard, dead-straight horizon across the whole picture.
     private func buildRoom() {
-        let floor = SCNFloor()
-        floor.reflectivity = 0
-        floor.materials = [PoolMaterials.floor()]
+        let size = 2 * Self.floorRadius
+        let floor = SCNPlane(width: CGFloat(size), height: CGFloat(size))
+        floor.materials = [PoolMaterials.floor(span: size)]
         let node = SCNNode(geometry: floor)
+        node.eulerAngles.x = -.pi / 2
         node.position.y = -0.79
+        node.castsShadow = false
+        node.name = "floor"
         scene.rootNode.addChildNode(node)
     }
+
+    static let floorRadius = 5.0
 
     // MARK: The table
 
@@ -342,10 +367,13 @@ final class PoolTableScene {
             node.eulerAngles.x = -.pi / 2
             scene.rootNode.addChildNode(node)
         }
+        // A cool fill: the light a room's pale walls throw back, which keeps
+        // the side of a ball away from the lamp grey rather than black or
+        // cloth-coloured.
         let ambient = SCNLight()
         ambient.type = .ambient
-        ambient.intensity = 12
-        ambient.color = NSColor(srgbRed: 0.9, green: 0.88, blue: 0.85, alpha: 1)
+        ambient.intensity = 190
+        ambient.color = NSColor(srgbRed: 0.86, green: 0.90, blue: 1.0, alpha: 1)
         let ambientNode = SCNNode()
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
@@ -382,10 +410,36 @@ final class PoolTableScene {
         // it at all it shows only the edge of its hood at the top of the
         // picture, so it steps out of the way once the camera nears its
         // height (its light and its reflection in the balls stay).
-        let height = pose.position.y
-        let fade = 1 - PoolTextures.smoothstep(Self.lampHeight - 0.2, Self.lampHeight - 0.05, height)
-        lamp.opacity = CGFloat(fade)
-        lamp.isHidden = fade <= 0.01
+        lamp.opacity = CGFloat(lampVisibility(from: pose.position))
+        lamp.isHidden = lamp.opacity <= 0.01
+    }
+
+    /// How much of the lamp to show from a camera at `eye`. It hangs in
+    /// the picture wherever it would appear beyond the table — seen from
+    /// low down, over the far end — and steps out of the way wherever it
+    /// would stand in front of the cloth, as from anywhere high above, or
+    /// when the camera comes right up to it. Its light and its reflection
+    /// in the balls stay either way.
+    func lampVisibility(from eye: SIMD3<Double>) -> Double {
+        let hx = Self.lampLength / 2 + 0.06, hz = Self.lampWidth / 2 + 0.045
+        let bottom = Self.lampHeight - 0.001, top = Self.lampHeight + 0.13
+        let outside = SIMD3(max(abs(eye.x) - hx, 0), max(max(bottom - eye.y, eye.y - top), 0), max(abs(eye.z) - hz, 0))
+        let near = PoolTextures.smoothstep(0.08, 0.25, simd_length(outside))
+        // Where each corner of the hood falls on the cloth, seen from the
+        // eye: the lamp covers the table if any lands on it.
+        let d = dimensions
+        var clear = Double.infinity
+        for x in [-hx, hx] {
+            for z in [-hz, hz] {
+                for y in [bottom, top] where y < eye.y - 1e-6 {
+                    let t = (eye.y - d.railTop) / (eye.y - y)
+                    let hit = eye + (SIMD3(x, y, z) - eye) * t
+                    clear = min(clear, max(abs(hit.x) - d.outerX, abs(hit.z) - d.outerY))
+                }
+            }
+        }
+        let beyond = PoolTextures.smoothstep(0, 0.35, clear)
+        return min(near, beyond)
     }
 
     // MARK: Balls

@@ -19,7 +19,11 @@
 //     (and how good the table is left for the opponent).
 //  3. Safety. When nothing is likely enough, legal contacts at soft speeds
 //     are tried for the one that leaves the opponent least; when no ball can
-//     be hit directly, kicks off the rails are sampled.
+//     be hit directly, kicks off the rails are sampled. Unlike a pot line,
+//     whose geometry gives its odds, a safety or a kick is judged the way
+//     this level would really play it: the perfect stroke and a few copies
+//     spoiled by the level's own error, averaged — so a kick that only works
+//     dead on never wins over a plain pot.
 //  4. Ball in hand: cue-ball spots behind the likeliest lines are tried the
 //     same way and the best kept — always one where the ball may legally go.
 //  5. Execution. The chosen stroke is spoiled by Gaussian error in aim,
@@ -46,6 +50,11 @@ enum PoolAIIntent: Sendable, Equatable {
     case pot(ball: Int, pocket: Int)
     case safety(ball: Int)
     case kick
+
+    var isPot: Bool {
+        if case .pot = self { return true }
+        return false
+    }
 }
 
 struct PoolAIDecision: Sendable {
@@ -101,8 +110,11 @@ enum PoolAI {
         let degree = Double.pi / 180
         switch d {
         case .easy:
+            // Stun as well as centre ball: a centre-ball straight-in pot
+            // follows the object ball into the pocket.
             return Profile(aimError: 0.30 * degree, speedError: 0.10, tipError: 0.10, breakPower: 0.86,
-                           variants: [(1.0, 0, 0), (1.35, 0, 0)], lines: 5, placements: 3, position: 0,
+                           variants: [(1.0, 0, 0), (1.0, 0, -0.35), (1.35, 0, 0), (1.35, 0, -0.35)], lines: 5,
+                           placements: 3, position: 0,
                            playsSafe: false, checksRobustness: false, lookahead: 0, playsCombos: false)
         case .medium:
             return Profile(aimError: 0.12 * degree, speedError: 0.05, tipError: 0.05, breakPower: 0.94,
@@ -141,7 +153,7 @@ enum PoolAI {
 
     static func decide(table: PoolTableState, rules: PoolRuleState, difficulty: PoolDifficulty, seed: UInt64,
                        geometry g: PoolTableGeometry) -> PoolAIDecision {
-        var planner = PoolAIPlanner(geometry: g, rules: rules, profile: profile(difficulty))
+        var planner = PoolAIPlanner(geometry: g, rules: rules, profile: profile(difficulty), seed: seed)
         var rng = DeterministicRNG(seed: seed ^ 0xA1_5E7)
         var decision = planner.plan(table: table)
         decision.shot = perturb(decision.planned, profile: planner.profile, rng: &rng)
@@ -153,8 +165,8 @@ enum PoolAI {
     static func perturb(_ shot: PoolShot, profile p: Profile, rng: inout DeterministicRNG) -> PoolShot {
         var s = shot
         s.aim += gaussian(&rng) * p.aimError
-        s.power = min(max(PoolShot.power(forSpeed: PoolShot.speed(forPower: shot.power)
-                                            * (1 + gaussian(&rng) * p.speedError)), 0), 1)
+        s.power = min(max(PoolShot.power(forSpeed: shot.speed * (1 + gaussian(&rng) * p.speedError),
+                                         isBreak: shot.isBreak), 0), 1)
         s.tipSide = min(max(s.tipSide + gaussian(&rng) * p.tipError, -1), 1)
         s.tipVertical = min(max(s.tipVertical + gaussian(&rng) * p.tipError, -1), 1)
         return s
@@ -195,12 +207,16 @@ struct PoolAIPlanner {
     let profile: PoolAI.Profile
     let me: Int
     var simulations = 0
+    /// Spoils safeties and kicks the way this level would play them, when
+    /// they are judged; seeded, so a decision replays exactly.
+    var rng: DeterministicRNG
 
-    init(geometry: PoolTableGeometry, rules: PoolRuleState, profile: PoolAI.Profile) {
+    init(geometry: PoolTableGeometry, rules: PoolRuleState, profile: PoolAI.Profile, seed: UInt64 = 0) {
         g = geometry
         self.rules = rules
         self.profile = profile
         me = rules.shooter
+        rng = DeterministicRNG(seed: seed ^ 0x5AFE_7EA5)
     }
 
     mutating func plan(table: PoolTableState) -> PoolAIDecision {
@@ -230,7 +246,8 @@ struct PoolAIPlanner {
         let apex = t.balls.filter { $0.number != 0 && $0.pocket == nil }
             .min { simd_distance($0.position, g.footSpot) < simd_distance($1.position, g.footSpot) }?.position ?? g.footSpot
         let d = apex - cue
-        let shot = PoolShot(aim: atan2(d.y, d.x), power: profile.breakPower, tipSide: 0, tipVertical: -0.15)
+        let shot = PoolShot(aim: atan2(d.y, d.x), power: profile.breakPower, tipSide: 0, tipVertical: -0.15,
+                            isBreak: true)
         return PoolAIDecision(placement: rules.ballInHand != nil ? spot : nil, shot: shot, planned: shot,
                               intent: .breakShot, expectedValue: 0, simulations: 0)
     }
@@ -281,8 +298,10 @@ struct PoolAIPlanner {
             if seen.count > profile.placements { break }
             var t = table
             place(spot, on: &t)
-            // A quick look from each spot; the chosen one gets the full search.
-            if var d = best(from: t, lines: 3, variants: Array(profile.variants.prefix(6)), safety: false) {
+            // A quick look from each spot, at its pots only; the chosen one
+            // gets the full search.
+            if var d = best(from: t, lines: 3, variants: Array(profile.variants.prefix(6)), safety: false,
+                            fallbacks: false) {
                 d.placement = spot
                 if d.expectedValue > (bestDecision?.expectedValue ?? -.infinity) { bestDecision = d }
             }
@@ -336,11 +355,14 @@ struct PoolAIPlanner {
     // MARK: Choosing a shot
 
     /// The best shot from this table: the likeliest pots tried on the
-    /// physics, a safety when nothing is likely, a kick when nothing can be
-    /// hit. Nil only when there is no cue ball.
+    /// physics, a safety when nothing is likely (for the levels that play
+    /// safe) or when every pot would foul (for all of them), and a kick only
+    /// when no ball it may hit can be hit directly. Without `fallbacks`, the
+    /// pots alone — for a quick comparison of tables. Nil when there is no
+    /// cue ball, or nothing was found.
     mutating func best(from table: PoolTableState, lines count: Int,
                        variants: [(speed: Double, side: Double, vertical: Double)], safety: Bool,
-                       lookahead: Int = 0) -> PoolAIDecision? {
+                       lookahead: Int = 0, fallbacks: Bool = true) -> PoolAIDecision? {
         guard let cue = table.cueBall, cue.pocket == nil else { return nil }
         var candidates = Array(lines(from: table).prefix(count))
         if profile.playsCombos && rules.mode == .nineBall {
@@ -368,9 +390,11 @@ struct PoolAIPlanner {
             for k in trials.indices where looked < lookahead && trials[k].outcome.continuesTurn
                 && trials[k].outcome.gameOver == nil {
                 looked += 1
-                var next = PoolAIPlanner(geometry: g, rules: trials[k].outcome.newState, profile: profile)
+                var next = PoolAIPlanner(geometry: g, rules: trials[k].outcome.newState, profile: profile,
+                                         seed: UInt64(k))
                 let quick = Array(profile.variants.prefix(3))
-                let follow = next.best(from: trials[k].outcome.table, lines: 4, variants: quick, safety: false)
+                let follow = next.best(from: trials[k].outcome.table, lines: 4, variants: quick, safety: false,
+                                       fallbacks: false)
                 simulations += next.simulations
                 let score = min(max(((follow?.expectedValue ?? -35) + 35) / 195, 0), 1)
                 trials[k].value = continuingValue(trials[k].outcome, result: nil, line: trials[k].line, nextShot: score)
@@ -398,12 +422,18 @@ struct PoolAIPlanner {
                            intent: .pot(ball: $0.line.carom ?? $0.line.target, pocket: $0.line.pocket),
                            expectedValue: $0.value, simulations: 0)
         }
-        if safety && (decision?.expectedValue ?? -.infinity) < 35 {
-            if let safe = safetyShot(from: table), safe.expectedValue > (decision?.expectedValue ?? -.infinity) {
-                decision = safe
-            }
+        guard fallbacks else { return decision }
+        let potted = decision?.expectedValue ?? -.infinity
+        // Below this, the pots on offer are fouls (or worse) as played.
+        let hopeless = -100.0
+        var direct: PoolAIDecision?
+        if (safety && potted < 35) || potted < hopeless {
+            direct = safetyShot(from: table)
+            if let direct, direct.expectedValue > potted { decision = direct }
         }
-        if decision == nil || (decision?.expectedValue ?? -.infinity) < -100 {
+        // Round the cushions only when nothing it may hit can be hit
+        // directly — or every direct hit fouls anyway.
+        if (decision?.expectedValue ?? -.infinity) < hopeless && (direct?.expectedValue ?? -.infinity) < -150 {
             if let kick = kickShot(from: table), kick.expectedValue > (decision?.expectedValue ?? -.infinity) {
                 decision = kick
             }
@@ -699,11 +729,13 @@ struct PoolAIPlanner {
     // MARK: Safety and kicks
 
     /// Soft legal contacts, thin to full on each ball it may hit, for the one
-    /// that leaves the opponent the least.
+    /// that leaves the opponent the least — as this level would play it.
+    /// Nil when no stroke hits a ball it may hit first: none can be reached
+    /// directly.
     mutating func safetyShot(from table: PoolTableState) -> PoolAIDecision? {
         guard let cue = table.cueBall?.position else { return nil }
         let legal = PoolRules.legalFirstContacts(rules, table: table)
-        var best: PoolAIDecision?
+        var found: [(shot: PoolShot, ball: Int, value: Double)] = []
         for n in legal.sorted() {
             guard let ball = table.ball(n), ball.pocket == nil else { continue }
             let d = ball.position - cue
@@ -716,32 +748,54 @@ struct PoolAIPlanner {
                     let shot = PoolShot(aim: centre + offset, power: power)
                     let result = simulate(shot, table)
                     guard result.firstContact == n else { continue }
-                    let v = value(of: result, before: table, line: nil).value
-                    if v > (best?.expectedValue ?? -.infinity) {
-                        best = PoolAIDecision(placement: nil, shot: shot, planned: shot, intent: .safety(ball: n),
-                                              expectedValue: v, simulations: 0)
-                    }
+                    found.append((shot, n, value(of: result, before: table, line: nil).value))
                 }
             }
         }
-        return best
+        return mostReliable(found, table: table) { .safety(ball: $0) }
     }
 
     /// Strokes all round the compass at two speeds, for a legal hit when no
     /// ball can be struck directly.
     mutating func kickShot(from table: PoolTableState) -> PoolAIDecision? {
-        var best: PoolAIDecision?
+        var found: [(shot: PoolShot, ball: Int, value: Double)] = []
         let count = 96
         for k in 0..<count {
             let aim = Double(k) / Double(count) * 2 * .pi
             for power in [0.4, 0.58] {
                 let shot = PoolShot(aim: aim, power: power)
                 let result = simulate(shot, table)
-                let v = value(of: result, before: table, line: nil).value
-                if v > (best?.expectedValue ?? -.infinity) {
-                    best = PoolAIDecision(placement: nil, shot: shot, planned: shot, intent: .kick,
-                                          expectedValue: v, simulations: 0)
-                }
+                found.append((shot, -1, value(of: result, before: table, line: nil).value))
+            }
+        }
+        return mostReliable(found, table: table) { _ in .kick }
+    }
+
+    /// Of strokes judged on their perfect simulation, the one that is best
+    /// as this level would really play it: the most promising few are tried
+    /// again spoiled by the level's error, and each is worth the average of
+    /// its perfect run and its spoiled ones. A safety that keeps the turn
+    /// only when struck dead on, or a kick that happens to pot a ball, is
+    /// worth what it is actually worth.
+    mutating func mostReliable(_ found: [(shot: PoolShot, ball: Int, value: Double)], table: PoolTableState,
+                               intent: (Int) -> PoolAIIntent) -> PoolAIDecision? {
+        // Best first; ties keep the order they were found in, so the choice
+        // never depends on how the sort breaks them.
+        let ranked = found.enumerated().sorted { a, b in
+            a.element.value != b.element.value ? a.element.value > b.element.value : a.offset < b.offset
+        }.map(\.element)
+        var best: PoolAIDecision?
+        let samples = 4
+        for candidate in ranked.prefix(6) {
+            var total = candidate.value
+            for _ in 0..<samples {
+                let played = PoolAI.perturb(candidate.shot, profile: profile, rng: &rng)
+                total += value(of: simulate(played, table), before: table, line: nil).value
+            }
+            let average = total / Double(samples + 1)
+            if average > (best?.expectedValue ?? -.infinity) {
+                best = PoolAIDecision(placement: nil, shot: candidate.shot, planned: candidate.shot,
+                                      intent: intent(candidate.ball), expectedValue: average, simulations: 0)
             }
         }
         return best

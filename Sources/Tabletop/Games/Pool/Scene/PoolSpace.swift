@@ -27,6 +27,10 @@ enum PoolSpace {
         SIMD3(Float(p.x), Float(height), Float(-p.y))
     }
 
+    static func sceneDouble(_ p: SIMD2<Double>, height: Double = 0) -> SIMD3<Double> {
+        SIMD3(p.x, height, -p.y)
+    }
+
     static func table(_ v: SCNVector3) -> SIMD2<Double> {
         SIMD2(Double(v.x), Double(-v.z))
     }

@@ -55,6 +55,28 @@ struct PoolBitmap {
         pixels[i + 3] = Self.byte(alpha)
     }
 
+    /// Paints the bitmap row by row, the rows spread across the cores:
+    /// `row(j, set)` calls `set(i, colour)` for every texel of row `j` it
+    /// paints (opaque, components 0…1, sRGB); texels it skips keep the fill.
+    /// Each row is written by one call only, so the result is the same as
+    /// painting in order.
+    mutating func paintRows(_ row: @escaping (Int, (Int, SIMD3<Double>) -> Void) -> Void) {
+        let width = self.width, height = self.height
+        pixels.withUnsafeMutableBufferPointer { buffer in
+            let box = MainThreadBox((buffer, row))
+            DispatchQueue.concurrentPerform(iterations: height) { j in
+                let (pixels, paint) = box.value
+                paint(j) { i, c in
+                    let k = (j * width + i) * 4
+                    pixels[k] = Self.byte(c.x)
+                    pixels[k + 1] = Self.byte(c.y)
+                    pixels[k + 2] = Self.byte(c.z)
+                    pixels[k + 3] = 255
+                }
+            }
+        }
+    }
+
     func get(_ x: Int, _ y: Int) -> SIMD3<Double> {
         let i = (y * width + x) * 4
         return SIMD3(Double(pixels[i]), Double(pixels[i + 1]), Double(pixels[i + 2])) / 255
@@ -255,18 +277,24 @@ enum PoolTextures {
 
     /// What every ball reflects: the lamp's long diffuser straight overhead,
     /// the dark ceiling and walls of the room around it, and below the
-    /// horizon the cloth the ball sits on, lit by the lamp. Equirectangular,
-    /// for `SCNScene.lightingEnvironment`; the same mapping as the balls'.
+    /// horizon, first the dark floor of the room and then — only looking
+    /// steeply down — the cloth the ball sits on. Equirectangular, for
+    /// `SCNScene.lightingEnvironment`; the same mapping as the balls'.
+    ///
+    /// The cloth here is as dark as it really renders, a little greyed, and
+    /// only straight below: a ball seen from above has at its rim the dark
+    /// room, not a bright green ring, and its underside picks up no more of
+    /// the cloth's colour than a real ball does.
     static func environmentImage(cloth: SIMD3<Double>, lampHeight: Double, lampLength: Double, lampWidth: Double,
                                  width W: Int = 1024) -> CGImage? {
         let H = W / 2
         var bitmap = PoolBitmap(width: W, height: H)
         let warm = SIMD3(1.0, 0.93, 0.80)
         let wall = SIMD3(0.105, 0.092, 0.082)
-        // As bright as the cloth really looks under the lamp — the balls
-        // reflect it along their lower halves.
-        let clothLit = simd_min(cloth * 1.7 + SIMD3(repeating: 0.02), SIMD3(repeating: 1))
-        for j in 0..<H {
+        let floor = SIMD3(0.050, 0.043, 0.038)
+        let grey = simd_dot(cloth, SIMD3(0.30, 0.59, 0.11))
+        let clothSeen = mix(cloth, SIMD3(repeating: grey), 0.3) * 0.55 + SIMD3(repeating: 0.012)
+        bitmap.paintRows { j, set in
             for i in 0..<W {
                 let d = sphereDirection(u: (Double(i) + 0.5) / Double(W), v: (Double(j) + 0.5) / Double(H))
                 var c = wall
@@ -292,10 +320,10 @@ enum PoolTextures {
                     // Towards the horizon the ceiling gives way to the walls.
                     c = mix(wall, c, smoothstep(0.02, 0.30, d.y))
                 } else {
-                    // Below the horizon: the lit cloth, darkening away from
-                    // the lamp's pool, then the far walls right at the rim.
-                    let fall = smoothstep(0.0, -0.5, d.y)
-                    c = mix(wall, clothLit, fall)
+                    // Below the horizon: the walls give way to the dark
+                    // floor, and only looking steeply down to the cloth.
+                    c = mix(wall, floor, smoothstep(0.0, -0.2, d.y))
+                    c = mix(c, clothSeen, smoothstep(-0.2, -0.65, d.y))
                 }
                 // Soft panels on the walls, so the balls' sides are not a
                 // featureless black.
@@ -308,7 +336,7 @@ enum PoolTextures {
                         c += SIMD3(0.95, 0.88, 0.78) * strength * 4 * panel
                     }
                 }
-                bitmap.set(i, j, c)
+                set(i, c)
             }
         }
         return bitmap.makeImage()
@@ -321,14 +349,14 @@ enum PoolTextures {
     /// that the eye takes for felt without ever seeing a pattern.
     static func clothImage(_ base: SIMD3<Double>, width W: Int = 1024, height H: Int = 512) -> CGImage? {
         var bitmap = PoolBitmap(width: W, height: H)
-        for j in 0..<H {
+        bitmap.paintRows { j, set in
             for i in 0..<W {
                 let x = Double(i) / Double(W), y = Double(j) / Double(H)
                 let blotch = fbm(x * 9, y * 5, octaves: 4, seed: 11) * 0.030
                 // The nap: faint streaks running the length of the table.
                 let nap = fbm(x * 1.5, y * 70, octaves: 2, seed: 23) * 0.014
                 let fleck = noise(Double(i) * 0.9, Double(j) * 0.9, seed: 5) * 0.012
-                bitmap.set(i, j, base * (1 + blotch + nap + fleck))
+                set(i, base * (1 + blotch + nap + fleck))
             }
         }
         return bitmap.makeImage()
@@ -406,7 +434,7 @@ enum PoolTextures {
         // Only the band the rail covers is worked out; the middle of the
         // picture lies under the cloth and is never seen.
         let skip = SIMD2(inner.x - 0.03, inner.y - 0.03)
-        for j in 0..<H {
+        bitmap.paintRows { j, set in
             for i in 0..<W {
                 // Table coordinates of the texel (image rows run from +y down).
                 let p = SIMD2((Double(i) + 0.5) / pixelsPerMetre - outer.x,
@@ -422,7 +450,7 @@ enum PoolTextures {
                 var c = woodColor(x: along * 1.6, y: across * 0.9, base: walnut, seed: piece &* 17)
                 // The mitre, as a hairline.
                 if abs(dx - dy) < 0.0018 { c *= 0.72 }
-                bitmap.set(i, j, c)
+                set(i, c)
             }
         }
         return bitmap.makeImage()
@@ -453,6 +481,21 @@ enum PoolTextures {
             let t = Double(i) / Double(W - 1)
             let alpha = 1 - smoothstep(0.35, 1, t)
             for j in 0..<4 { bitmap.set(i, j, SIMD3(repeating: 1), alpha: alpha) }
+        }
+        return bitmap.makeImage()
+    }
+
+    /// Coverage for the floor: whole under and around the table, then fading
+    /// smoothly to nothing at the edge of the disc it is drawn on, so the
+    /// floor never ends in a line.
+    static func radialFadeImage(size N: Int = 256) -> CGImage? {
+        var bitmap = PoolBitmap(width: N, height: N, fill: [0, 0, 0, 0])
+        for j in 0..<N {
+            for i in 0..<N {
+                let x = (Double(i) + 0.5) / Double(N) * 2 - 1, y = (Double(j) + 0.5) / Double(N) * 2 - 1
+                let r = (x * x + y * y).squareRoot()
+                bitmap.set(i, j, SIMD3(repeating: 1), alpha: 1 - smoothstep(0.38, 0.98, r))
+            }
         }
         return bitmap.makeImage()
     }

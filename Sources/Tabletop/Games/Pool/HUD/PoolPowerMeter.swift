@@ -19,6 +19,9 @@ final class PoolPowerMeter: NSView {
     var chargingPower: Double? { didSet { if chargingPower != oldValue { face.needsDisplay = true; updateAccessibility() } } }
     var isEnabled = true { didSet { if isEnabled != oldValue { face.needsDisplay = true; alphaValue = isEnabled ? 1 : 0.55 } } }
 
+    /// VoiceOver moved the armed strength; returns whether the game took it
+    /// (not while it is not the player's turn).
+    var onArmedChange: ((Double) -> Bool)?
     var onBegin: (() -> Void)?
     var onChange: ((Double) -> Void)?
     /// `true` to shoot at the strength reached, `false` when called off.
@@ -100,8 +103,17 @@ final class PoolPowerMeter: NSView {
                                             other: NSLocalizedString("%d percent", comment: "accessibility: pool power, many")))
     }
 
-    override func accessibilityPerformIncrement() -> Bool { armedPower = min(1, armedPower + 0.05); return true }
-    override func accessibilityPerformDecrement() -> Bool { armedPower = max(0, armedPower - 0.05); return true }
+    override func accessibilityPerformIncrement() -> Bool { stepArmed(by: 0.05) }
+    override func accessibilityPerformDecrement() -> Bool { stepArmed(by: -0.05) }
+
+    /// VoiceOver's step: the shot's strength, not only what the meter shows.
+    private func stepArmed(by step: Double) -> Bool {
+        guard isEnabled, chargingPower == nil else { return false }
+        let power = max(0.02, min(1, armedPower + step))
+        guard onArmedChange?(power) == true else { return false }
+        armedPower = power
+        return true
+    }
 }
 
 /// The meter's markings and fill, over its glass.
@@ -137,12 +149,28 @@ final class PoolPowerMeterFace: NSView {
             ctx.saveGState()
             ctx.addPath(path)
             ctx.clip()
+            // At rest the armed strength shows plainly but quietly; pulled,
+            // it lights up.
             let strong = charging != nil
             AppleStyle.fillVertical(fill, context: ctx, [
-                (NSColor(white: 1, alpha: strong ? 0.95 : 0.34), 0),
-                (strong ? Palette.accentSoft.withAlphaComponent(0.95) : NSColor(white: 1, alpha: 0.28), 1),
+                (NSColor(white: 1, alpha: strong ? 0.95 : 0.62), 0),
+                (strong ? Palette.accentSoft.withAlphaComponent(0.95) : NSColor(white: 1, alpha: 0.46), 1),
             ])
             ctx.restoreGState()
+        }
+        // Which way to pull, over the track.
+        if let arrow = NSImage(systemSymbolName: "arrow.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .bold)) {
+            let tinted = NSImage(size: arrow.size, flipped: false) { rect in
+                arrow.draw(in: rect)
+                (charging != nil ? Palette.textPrimary : Palette.textTertiary).set()
+                rect.fill(using: .sourceAtop)
+                return true
+            }
+            let size = arrow.size
+            tinted.draw(in: CGRect(x: (bounds.width - size.width) / 2, y: (track.minY - size.height) / 2 + 1,
+                                   width: size.width, height: size.height),
+                        from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
         // The number underneath.
         let text = "\(Int((power * 100).rounded()))" as NSString

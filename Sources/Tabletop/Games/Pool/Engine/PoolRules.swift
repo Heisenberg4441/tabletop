@@ -253,7 +253,9 @@ enum PoolRules {
                 respot(8, on: &table, geometry: g)
                 messages.append(.eightBallRespotted)
             }
-            credited = potted
+            // The 8 is back on the cloth: it keeps the break alive but is
+            // nobody's ball, and must not count in a run.
+            credited = potted.filter { $0 != 8 }
             continues = foul == nil && !potted.isEmpty
             next.isBreakShot = false
             messages.append(.tableOpen)

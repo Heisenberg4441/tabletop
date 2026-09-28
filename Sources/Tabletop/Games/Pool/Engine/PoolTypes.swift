@@ -171,37 +171,52 @@ struct PoolShot: Codable, Sendable, Equatable {
     /// Direction of the stroke in the table plane, radians; 0 is +x.
     var aim: Double
     /// 0...1. Mapped to the cue ball's speed off a centre hit by
-    /// `PoolShot.speed(forPower:)`, about 0.3 m/s (a touch) to 8 m/s (a break).
+    /// `PoolShot.speed(forPower:isBreak:)`: about 0.3 m/s (a touch) to 8 m/s,
+    /// or to 11 m/s for the break.
     var power: Double
     /// −1...1, a fraction of the safe tip offset (half the ball's radius);
     /// positive is right english.
     var tipSide: Double
     /// −1...1; positive is follow (top), negative is draw (screw).
     var tipVertical: Double
+    /// The opening break: the same meter, but mapped onto the break's own
+    /// faster range (`breakMaximumSpeed`), so a break can be struck as hard
+    /// as a real one without the everyday range of the meter shifting.
+    var isBreak: Bool
 
-    init(aim: Double, power: Double, tipSide: Double = 0, tipVertical: Double = 0) {
+    init(aim: Double, power: Double, tipSide: Double = 0, tipVertical: Double = 0, isBreak: Bool = false) {
         self.aim = aim
         self.power = power
         self.tipSide = tipSide
         self.tipVertical = tipVertical
+        self.isBreak = isBreak
     }
 
     static let minimumSpeed = 0.3
     static let maximumSpeed = 8.0
+    /// A full break: about 25 mph, what a strong amateur breaks a nine-foot
+    /// table at. At the everyday 8 m/s most breaks would pocket nothing and
+    /// hand the table straight over.
+    static let breakMaximumSpeed = 11.0
 
     /// Power is not linear in speed: most shots in pool are soft, and a
     /// linear meter would crowd them into its bottom third. `p^1.5` gives the
     /// first half of the meter the speeds from a touch to a firm pot (0.3 to
-    /// 3 m/s) and keeps the break at the top.
-    static func speed(forPower power: Double) -> Double {
+    /// 3 m/s) and keeps the hardest strokes at the top.
+    static func speed(forPower power: Double, isBreak: Bool = false) -> Double {
         let p = min(max(power.isFinite ? power : 0, 0), 1)
-        return minimumSpeed + (maximumSpeed - minimumSpeed) * pow(p, 1.5)
+        let top = isBreak ? breakMaximumSpeed : maximumSpeed
+        return minimumSpeed + (top - minimumSpeed) * pow(p, 1.5)
     }
 
-    static func power(forSpeed speed: Double) -> Double {
-        let s = min(max(speed, minimumSpeed), maximumSpeed)
-        return pow((s - minimumSpeed) / (maximumSpeed - minimumSpeed), 1.0 / 1.5)
+    static func power(forSpeed speed: Double, isBreak: Bool = false) -> Double {
+        let top = isBreak ? breakMaximumSpeed : maximumSpeed
+        let s = min(max(speed.isFinite ? speed : minimumSpeed, minimumSpeed), top)
+        return pow((s - minimumSpeed) / (top - minimumSpeed), 1.0 / 1.5)
     }
+
+    /// The cue ball's speed off a centre hit for this stroke.
+    var speed: Double { Self.speed(forPower: power, isBreak: isBreak) }
 
     /// The tip offset actually used: the requested one, pulled back onto the
     /// safe circle when it lies outside it (a real tip there would miscue).
@@ -215,7 +230,7 @@ struct PoolShot: Codable, Sendable, Equatable {
     /// Unit vector of the aim.
     var direction: SIMD2<Double> { SIMD2(cos(aim), sin(aim)) }
 
-    private enum CodingKeys: String, CodingKey { case aim, power, tipSide, tipVertical }
+    private enum CodingKeys: String, CodingKey { case aim, power, tipSide, tipVertical, isBreak }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -223,6 +238,7 @@ struct PoolShot: Codable, Sendable, Equatable {
         power = ((try? c.decodeIfPresent(Double.self, forKey: .power)) ?? nil) ?? 0.5
         tipSide = ((try? c.decodeIfPresent(Double.self, forKey: .tipSide)) ?? nil) ?? 0
         tipVertical = ((try? c.decodeIfPresent(Double.self, forKey: .tipVertical)) ?? nil) ?? 0
+        isBreak = ((try? c.decodeIfPresent(Bool.self, forKey: .isBreak)) ?? nil) ?? false
     }
 }
 

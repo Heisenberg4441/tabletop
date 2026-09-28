@@ -43,11 +43,17 @@ enum PoolGuideLength: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// The New Game card's choices.
+/// The New Game card's choices, and what the first-time hints have taught.
 struct PoolOptions: Codable, Equatable, Sendable {
     var mode: PoolMode = .eightBall
     var difficulty: PoolDifficulty = .medium
     var guides: PoolGuideLength = .long
+    /// The player has aimed by dragging across the table: the hint beside
+    /// the cue ball is no longer shown.
+    var hasAimed = false
+    /// The player has taken a shot: the hint beside the meter is no longer
+    /// shown.
+    var hasShot = false
 
     init() {}
 
@@ -56,6 +62,17 @@ struct PoolOptions: Codable, Equatable, Sendable {
         mode = ((try? c.decodeIfPresent(PoolMode.self, forKey: .mode)) ?? nil) ?? .eightBall
         difficulty = ((try? c.decodeIfPresent(PoolDifficulty.self, forKey: .difficulty)) ?? nil) ?? .medium
         guides = ((try? c.decodeIfPresent(PoolGuideLength.self, forKey: .guides)) ?? nil) ?? .long
+        hasAimed = ((try? c.decodeIfPresent(Bool.self, forKey: .hasAimed)) ?? nil) ?? false
+        hasShot = ((try? c.decodeIfPresent(Bool.self, forKey: .hasShot)) ?? nil) ?? false
+    }
+
+    /// The same game choices with `other`'s hint progress — which belongs
+    /// to the player, not to any one game.
+    func keepingHints(of other: PoolOptions) -> PoolOptions {
+        var o = self
+        o.hasAimed = other.hasAimed || hasAimed
+        o.hasShot = other.hasShot || hasShot
+        return o
     }
 }
 

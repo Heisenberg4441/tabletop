@@ -113,11 +113,13 @@ enum PoolMaterials {
         return m
     }
 
+    /// A satin varnish: enough coat to catch the lamp, not so much that
+    /// the rail's edge mirrors the room.
     private static func varnishedWood() -> SCNMaterial {
         let m = pbr()
-        m.roughness.contents = 0.42
-        m.clearCoat.contents = 0.55
-        m.clearCoatRoughness.contents = 0.16
+        m.roughness.contents = 0.56
+        m.clearCoat.contents = 0.16
+        m.clearCoatRoughness.contents = 0.3
         m.diffuse.mipFilter = .linear
         return m
     }
@@ -134,10 +136,10 @@ enum PoolMaterials {
     static func leather() -> SCNMaterial {
         let m = pbr()
         m.diffuse.contents = NSColor(white: 0.03, alpha: 1)
-        m.roughness.contents = 0.62
+        m.roughness.contents = 0.7
         // Inside a pocket the room's light hardly reaches; without this the
-        // leather mirrors the green of the cloth.
-        m.ambientOcclusion.contents = NSColor(white: 0.18, alpha: 1)
+        // leather mirrors the cloth.
+        m.ambientOcclusion.contents = NSColor(white: 0.12, alpha: 1)
         return m
     }
 
@@ -148,14 +150,21 @@ enum PoolMaterials {
         return m
     }
 
-    static func floor() -> SCNMaterial {
+    /// Boards about 15 cm wide over a plane `span` metres across, fading
+    /// out to nothing towards its edge.
+    static func floor(span: Double) -> SCNMaterial {
         let m = pbr()
         m.diffuse.contents = image("floor") { PoolTextures.floorImage(size: 256) }
         m.diffuse.wrapS = .repeat
         m.diffuse.wrapT = .repeat
-        m.diffuse.contentsTransform = SCNMatrix4MakeScale(6, 6, 1)
+        let repeats = CGFloat(span / (4 * 0.15))           // four boards to a tile
+        m.diffuse.contentsTransform = SCNMatrix4MakeScale(repeats, repeats, 1)
         m.diffuse.mipFilter = .linear
-        m.roughness.contents = 0.7
+        m.roughness.contents = 0.8
+        m.transparent.contents = image("floor-fade") { PoolTextures.radialFadeImage() }
+        m.transparencyMode = .aOne
+        m.blendMode = .alpha
+        m.isDoubleSided = false
         return m
     }
 
@@ -221,6 +230,20 @@ enum PoolMaterials {
         m.blendMode = .alpha
         m.writesToDepthBuffer = false
         m.isDoubleSided = true
+        return m
+    }
+
+    /// The cue ball's stand-in where it may not be put down: a lit,
+    /// see-through red ball.
+    static func deniedBall() -> SCNMaterial {
+        let m = pbr()
+        m.diffuse.contents = NSColor(srgbRed: 0.86, green: 0.24, blue: 0.22, alpha: 1)
+        m.roughness.contents = 0.25
+        m.clearCoat.contents = 0.6
+        m.clearCoatRoughness.contents = 0.05
+        m.blendMode = .alpha
+        m.isDoubleSided = false
+        m.writesToDepthBuffer = false
         return m
     }
 

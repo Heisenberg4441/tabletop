@@ -134,6 +134,13 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var playback: Playback?
     /// A struck shot waiting for its simulation, or for the stroke to land.
     var pendingResult: PoolShotResult?
+    /// The stroke going through and the table it was played on, from the
+    /// strike until the balls start rolling — so a new game or a quit in
+    /// that moment can still take the shot into the game.
+    var strokeInFlight: (shot: PoolShot, table: PoolTableState)?
+    /// The result banner is up (it offers what to play next; the action bar
+    /// stays empty meanwhile).
+    var resultShowing = false
     var strokeLanded = false
     /// Bumped by every new game, so nothing from an old one (a decision, a
     /// simulation, a scheduled step) lands in the new one.
@@ -145,10 +152,18 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var runsSynchronously = TabletopEnvironment.isRenderingSnapshot
     var isActive = false
     var ballInHandBadge: TableBadge?
+    var aimHint: TableBadge?
+    /// Over the red stand-in: why the cue ball may not go there.
+    var denyBadge: TableBadge?
+    var shootHint: TableBadge?
     /// Frames still to draw after a change made at rest.
     var redrawFrames = 0
     /// Where the last drag event was, in the scene view.
     var dragLast: CGPoint = .zero
+    /// Where the press began, and whether the pointer has since moved off
+    /// it (a press that never moved is a click).
+    var dragStart: CGPoint = .zero
+    var dragMoved = false
     /// The last place a dragged cue ball was allowed to be.
     var dragValidSpot: SIMD2<Double>?
     /// Told about every shot as it is taken into the game — the result the
@@ -165,6 +180,8 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     var computerPlate: PoolPlayerPlate!
     let powerMeter = PoolPowerMeter()
     let spinControl = PoolSpinControl()
+    let powerCaption = PoolGame.caption(NSLocalizedString("Power", comment: "pool: caption over the power meter"))
+    let spinCaption = PoolGame.caption(NSLocalizedString("Spin", comment: "pool: caption over the spin control"))
     let vignette = PoolVignetteView()
     let scheduler = TableScheduler()
     var clock: PoolFrameClock!
@@ -227,9 +244,17 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         powerMeter.onBegin = { [weak self] in self?.beginCharge(.meter) }
         powerMeter.onChange = { [weak self] power in self?.updateCharge(power) }
         powerMeter.onEnd = { [weak self] shoot in self?.endCharge(shoot: shoot) }
+        // VoiceOver's increment and decrement set the strength Shoot uses.
+        powerMeter.onArmedChange = { [weak self] power in
+            guard let self, self.isPlayersTurn, self.phase == .aiming else { return false }
+            self.armedPower = power
+            return true
+        }
         root.addSubview(powerMeter)
         spinControl.onChange = { [weak self] side, vertical in self?.setSpin(side: side, vertical: vertical) }
         root.addSubview(spinControl)
+        root.addSubview(powerCaption)
+        root.addSubview(spinCaption)
 
         actionBar.bottomMargin = Spacing.l
         actionBar.install(in: root)
@@ -289,15 +314,15 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         clock.isAllowed = false
         scheduler.suspend()
         if phase == .charging { cancelCharge() }
-        drag = .none
+        endDrag()
         save()
     }
 
     func prepareToQuit() {
         guard isViewLoaded else { save(); return }
-        // A shot still rolling is played out, so its result — a win, a
-        // record run — is kept.
-        finishPlaybackNow()
+        // A shot struck or still rolling is played out, so its result — a
+        // win, a record run — is kept.
+        settleShotInFlight()
         save()
     }
 
@@ -376,7 +401,8 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         case #selector(rematch(_:)):
             item.title = match.isPractice ? NSLocalizedString("Re-rack", comment: "pool menu: practice rack again")
                 : NSLocalizedString("Rematch", comment: "pool menu: same game again")
-            return optionsCard?.isPresented != true
+            // Not while a shot is out on the cloth: its verdict comes first.
+            return optionsCard?.isPresented != true && !isShotInFlight
         case #selector(toggleTopView(_:)):
             item.state = viewMode == .top ? .on : .off
             return true
@@ -424,24 +450,36 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     }
 
     /// Racks a new game with `options`, `breaker` to break. A game against
-    /// the computer that was under way counts as lost.
+    /// the computer that was under way counts as lost — but a shot already
+    /// struck is taken into it first, so a winning eight still rolling
+    /// counts as the win it is.
     func startNewGame(_ options: PoolOptions, breaker: Int) {
+        settleShotInFlight()
         countAbandonedGame()
+        let options = options.keepingHints(of: self.options)
         self.options = options
         Storage.save(options, to: Self.optionsName)
         generation += 1
         scheduler.cancelAll()
         Banner.dismissAll(in: root)
+        resultShowing = false
         Toast.hide(in: root, animated: false)
+        endDrag()
         TableBadge.hideAll(in: root)
         ballInHandBadge = nil
+        aimHint = nil
+        denyBadge = nil
+        shootHint = nil
         tweens.removeAll()
+        // A follow-through cut short leaves the cue faded; the next turn
+        // starts with it whole.
+        table.cue.node.opacity = 1
         playback = nil
         pendingResult = nil
+        strokeInFlight = nil
         decision = nil
         powerMeter.cancel()
         chargeSource = nil
-        drag = .none
         let seed = Self.freshSeed() &+ UInt64(generation)
         match = PoolMatch.start(options, seed: seed, breaker: breaker, opponentName: Self.opponentName(seed: seed))
         computerPlate.seat.name = match.opponentName
@@ -476,7 +514,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
 
     // MARK: Screenshots
 
-    static var screenshotScenarios: [String] { ["break", "aim", "top", "ballInHand", "result", "rolling", "thinking"] }
+    static var screenshotScenarios: [String] {
+        ["break", "aim", "top", "ball-in-hand", "placing", "result", "rolling", "thinking", "rail", "corner", "ball-behind"]
+    }
 
     func prepareForScreenshot(scenario: String?) {
         loadViewIfNeeded()
@@ -508,6 +548,18 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
                                    width: f.width * scale, height: f.height * scale))
         guard let underlay = ctx.makeImage() else { return nil }
         return LayerSnapshot.image(of: view, size: size, scale: scale, underlay: underlay)
+    }
+
+    /// A small label over a HUD control, legible on the cloth and the room.
+    static func caption(_ text: String) -> NSTextField {
+        let label = Typography.label(text, font: Typography.caption, color: Palette.textSecondary)
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor(white: 0, alpha: 0.7)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        label.shadow = shadow
+        label.setAccessibilityElement(false)
+        return label
     }
 
     // MARK: Library tile

@@ -104,6 +104,9 @@ final class PoolBallNode {
 final class PoolCueNode {
     let node = SCNNode()
     let length: Double
+    /// The cue's pieces, a hand's width long at most, with where each runs
+    /// from and to along the cue — for fading the part near the camera.
+    private var pieces: [(node: SCNNode, from: Double, to: Double)] = []
 
     /// The shaft's radius `distance` metres back from the tip — for clearing
     /// rails and balls.
@@ -138,20 +141,46 @@ final class PoolCueNode {
         let materials = Self.materials()
         var z = 0.0
         for part in Self.parts {
-            // SCNCone runs along y with its top at +y; turned a quarter about
-            // x its top points along +z, away from the tip.
-            let cone = SCNCone(topRadius: CGFloat(part.r1), bottomRadius: CGFloat(part.r0), height: CGFloat(part.length))
-            cone.radialSegmentCount = 40
-            if let m = materials[part.material] { cone.materials = [m] }
-            let piece = SCNNode(geometry: cone)
-            piece.eulerAngles.x = .pi / 2
-            piece.position.z = CGFloat(z + part.length / 2)
-            piece.castsShadow = true
-            node.addChildNode(piece)
-            z += part.length
+            // Long parts in several pieces, so the cue can fade out bit by
+            // bit where it passes close to the camera.
+            let count = max(1, Int((part.length / 0.1).rounded(.up)))
+            let step = part.length / Double(count)
+            for k in 0..<count {
+                let r0 = part.r0 + (part.r1 - part.r0) * Double(k) / Double(count)
+                let r1 = part.r0 + (part.r1 - part.r0) * Double(k + 1) / Double(count)
+                // SCNCone runs along y with its top at +y; turned a quarter
+                // about x its top points along +z, away from the tip.
+                let cone = SCNCone(topRadius: CGFloat(r1), bottomRadius: CGFloat(r0), height: CGFloat(step))
+                cone.radialSegmentCount = 40
+                if let m = materials[part.material] { cone.materials = [m] }
+                let piece = SCNNode(geometry: cone)
+                piece.eulerAngles.x = .pi / 2
+                piece.position.z = CGFloat(z + step / 2)
+                piece.castsShadow = true
+                node.addChildNode(piece)
+                pieces.append((piece, z, z + step))
+                z += step
+            }
         }
         length = z
         node.name = "cue"
+    }
+
+    /// Fades whatever part of the cue passes close to a camera at `eye`
+    /// (scene coordinates): a cue running under the lens would otherwise
+    /// fill the picture with a blur of wood. Nothing further than a third of
+    /// a metre is touched.
+    func fade(near eye: SIMD3<Float>) {
+        guard !node.isHidden else { return }
+        let tip = node.simdWorldPosition
+        let along = node.simdWorldFront * -1          // localFront is −z; the cue runs along +z
+        for piece in pieces {
+            let a = tip + along * Float(piece.from), b = tip + along * Float(piece.to)
+            let ab = b - a
+            let t = max(0, min(1, simd_dot(eye - a, ab) / max(simd_length_squared(ab), 1e-9)))
+            let distance = Double(simd_distance(eye, a + ab * t))
+            piece.node.opacity = CGFloat(PoolTextures.smoothstep(0.08, 0.3, distance))
+        }
     }
 
     private static func materials() -> [String: SCNMaterial] {
@@ -166,14 +195,15 @@ final class PoolCueNode {
             }
             return m
         }
-        let maple = make(NSColor(srgbRed: 0.80, green: 0.67, blue: 0.47, alpha: 1), roughness: 0.4, coat: 0.5)
+        // Light coats: a glossy cue would mirror the room along its underside.
+        let maple = make(NSColor(srgbRed: 0.80, green: 0.67, blue: 0.47, alpha: 1), roughness: 0.42, coat: 0.22)
         // The grain runs the length of the shaft, faint — maple is a pale,
         // close-grained wood.
         maple.diffuse.contents = PoolMaterials.image("maple") {
             PoolTextures.woodImage(width: 64, height: 512, base: [0.78, 0.65, 0.46], seed: 91, grainAlongV: true, contrast: 0.35)
         }
         maple.diffuse.wrapS = .repeat
-        let ebony = make(NSColor(srgbRed: 0.055, green: 0.036, blue: 0.028, alpha: 1), roughness: 0.22, coat: 0.9)
+        let ebony = make(NSColor(srgbRed: 0.055, green: 0.036, blue: 0.028, alpha: 1), roughness: 0.26, coat: 0.45)
         return [
             "tip": make(NSColor(srgbRed: 0.20, green: 0.38, blue: 0.62, alpha: 1), roughness: 0.95),
             "ferrule": make(NSColor(srgbRed: 0.95, green: 0.94, blue: 0.90, alpha: 1), roughness: 0.3, coat: 0.4),

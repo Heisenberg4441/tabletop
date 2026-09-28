@@ -329,6 +329,9 @@ enum PoolTests {
 
         energy(t)
         computerInRealTime(t)
+        leavingMidShot(t)
+        hudAndHints(t)
+        framing(t)
         snapshot(t)
     }
 
@@ -341,6 +344,11 @@ enum PoolTests {
         let breaker: Int
         let you: PoolDifficulty
         let computer: PoolDifficulty
+        /// The player's seat's strokes to play; nil plays the game out.
+        var turns: Int? = nil
+        /// The player's seat simply strikes the nearest ball it may hit
+        /// (instead of deciding like the computer does).
+        var scripted = false
     }
 
     /// Whole games, computer against computer, through the controller the
@@ -366,11 +374,13 @@ enum PoolTests {
             }
             plans.append(GamePlan(mode: .practice, breaker: PoolSeat.you, you: .medium, computer: .medium))
         } else {
-            // A debug build runs the engine some seventy times slower: one
-            // game of each, still whole, at the cheapest level.
+            // A debug build runs the engine some seventy times slower: the
+            // opening shots of a practice rack and of a nine-ball game —
+            // the break, and the computer's replies — checked the same way.
             plans = [
-                GamePlan(mode: .nineBall, breaker: PoolSeat.you, you: .easy, computer: .easy),
-                GamePlan(mode: .eightBall, breaker: PoolSeat.computer, you: .easy, computer: .easy),
+                GamePlan(mode: .practice, breaker: PoolSeat.you, you: .easy, computer: .easy, turns: 3, scripted: true),
+                GamePlan(mode: .eightBall, breaker: PoolSeat.computer, you: .easy, computer: .easy, turns: 1,
+                         scripted: true),
             ]
         }
         let started = Date()
@@ -423,11 +433,12 @@ enum PoolTests {
             var problem = self.problem(in: game, numbers: numbers, before: nil)
             // Practice has no winner: it is over when the rack is cleared.
             func done() -> Bool { game.match.isOver || (game.match.isPractice && game.match.ballsOnTable.isEmpty) }
-            while problem == nil && !done() && turns < 150 {
+            while problem == nil && !done() && turns < (plan.turns ?? 150) {
                 let before = game.match.table
-                let decision = PoolAI.decide(table: game.match.table, rules: game.match.rules, difficulty: plan.you,
-                                             seed: game.match.decisionSeed ^ UInt64(index + 1) << 40,
-                                             geometry: game.geometry)
+                let decision = plan.scripted
+                    ? PoolAIDecision(placement: nil, shot: PoolShot(aim: game.defaultAim(), power: 0.55))
+                    : PoolAI.decide(table: game.match.table, rules: game.match.rules, difficulty: plan.you,
+                                    seed: game.match.decisionSeed ^ UInt64(index + 1) << 40, geometry: game.geometry)
                 if let spot = decision.placement, game.playerHasBallInHand {
                     if !game.isAllowedPlacement(spot) { legalPlacements = false }
                     game.moveCueBall(to: spot)
@@ -441,6 +452,8 @@ enum PoolTests {
             shots += game.match.rules.shotCount
             if let problem {
                 problems.append("\(PoolEngineText.mode(plan.mode)) game \(index + 1): \(problem)")
+            } else if plan.turns != nil {
+                finished += 1
             } else if let winner = game.match.rules.winner {
                 finished += 1
                 wins[winner] += 1
@@ -450,17 +463,22 @@ enum PoolTests {
                 problems.append("\(PoolEngineText.mode(plan.mode)) game \(index + 1) never ended")
             }
         }
-        t.check("\(finished) of \(plans.count) whole games, computer against computer, end with a winner"
-                    + (plans.contains { $0.mode == .practice } ? " (or, in practice, a cleared table)" : ""),
+        let whole = plans.allSatisfy { $0.turns == nil }
+        t.check(whole
+                    ? "\(finished) of \(plans.count) whole games, computer against computer, end with a winner (or, in practice, a cleared table)"
+                    : "\(finished) of \(plans.count) games, computer against computer, play their opening shots (whole games in release)",
                 finished == plans.count)
         t.check("the table and the rules make sense after every one of \(shots) shots"
                     + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), problems.isEmpty)
         t.check("each shot's playback ends exactly on the table the rules judged", trueToPlayback)
         t.check("every ball seen dropping goes down the pocket the rules counted", rightPockets)
         t.check("the player's seat only ever puts the cue ball where the rules allow", legalPlacements)
-        let contested = plans.filter { $0.mode != .practice }.count
-        t.check("finished games are counted",
-                PoolStatistics.load().played.values.reduce(0, +) == playedBefore + wins[0] + wins[1] && wins[0] + wins[1] == contested)
+        let contested = plans.filter { $0.mode != .practice && $0.turns == nil }.count
+        if whole {
+            t.check("finished games are counted",
+                    PoolStatistics.load().played.values.reduce(0, +) == playedBefore + wins[0] + wins[1]
+                        && wins[0] + wins[1] == contested)
+        }
         t.info(String(format: "%d games (player's seat %d, computer's %d), %d shots, through the controller: %.1f s",
                       plans.count, wins[0], wins[1], shots, Date().timeIntervalSince(started)))
         var rates: [PoolDifficulty: (pots: Double, fouls: Double)] = [:]
@@ -631,6 +649,266 @@ enum PoolTests {
         game.gameWillResignActive()
     }
 
+    // MARK: Leaving mid-shot, new games, the mouse held
+
+    /// Waits (the engine works on a background queue) and then steps frames
+    /// until `done`, at most `limit` of them.
+    private static func drive(_ game: PoolGame, frames limit: Int = 600, until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(20)
+        var frames = 0
+        while !done() && frames < limit && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+            game.scheduler.runPendingImmediately()
+            _ = game.frame(1.0 / 60)
+            frames += 1
+        }
+    }
+
+    /// SceneKit projects points only once its view has drawn: draws it
+    /// once, off screen, and puts the badges where they belong.
+    private static func drawOnce(_ game: PoolGame) {
+        _ = game.sceneView.snapshot()
+        game.applyCamera()
+    }
+
+    private static func mouse(_ type: NSEvent.EventType, at point: CGPoint, in game: PoolGame) -> NSEvent? {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                           windowNumber: game.view.window?.windowNumber ?? 0, context: nil, eventNumber: 0,
+                           clickCount: 1, pressure: 1)
+    }
+
+    /// A win the rules have decided is never thrown away by a new game —
+    /// while the balls roll, or even before they start — and a new game
+    /// begins clean: no Rematch while a shot is out, the cue whole again,
+    /// a carried cue ball put down when the window goes, no frames for a
+    /// mouse held still, VoiceOver's power the power shot.
+    private static func leavingMidShot(_ t: TestReporter) {
+        let before = TabletopEnvironment.animationsOverride
+        TabletopEnvironment.animationsOverride = true
+        defer { TabletopEnvironment.animationsOverride = before }
+        let rematch = NSMenuItem(title: "", action: #selector(PoolGame.rematch(_:)), keyEquivalent: "r")
+
+        for (label, waitForRolling) in [("rolling", true), ("the cue still going through", false)] {
+            let (game, window) = makeGame()
+            _ = window
+            game.runsSynchronously = false
+            game.clock.isAllowed = false
+            let stats = PoolStatistics.load()
+            func total(_ s: PoolStatistics) -> (games: Int, wins: Int) {
+                (PoolDifficulty.allCases.map(s.games).reduce(0, +), PoolDifficulty.allCases.map(s.wins).reduce(0, +))
+            }
+            PoolScenarios.playWinningEight(game)
+            if waitForRolling {
+                drive(game) { game.phase == .rolling && (game.playback?.time ?? 0) > 0.5 }
+            }
+            let decided = game.phase == .rolling || game.phase == .striking
+            t.check("Rematch is off while a shot is out on the cloth (\(label))",
+                    decided && !game.validateMenuItem(rematch))
+            game.startNewGame(game.match.options, breaker: PoolSeat.computer)
+            let after = PoolStatistics.load()
+            t.check("a new game started with the winning eight \(label) records the win, not a loss",
+                    total(after).wins == total(stats).wins + 1 && total(after).games == total(stats).games + 1)
+            t.check("…and the new game's cue is whole (opacity \(game.table.cue.node.opacity))",
+                    game.table.cue.node.opacity == 1 && !game.resultShowing && !game.isShotInFlight)
+        }
+
+        // Carrying the cue ball when the window goes: it is put down where
+        // it last could be, and the red stand-in goes.
+        let (game, window) = makeGame()
+        _ = window
+        var options = PoolOptions()
+        options.hasAimed = true
+        options.hasShot = true
+        game.startNewGame(options, breaker: PoolSeat.you)
+        game.view.layoutSubtreeIfNeeded()
+        drawOnce(game)
+        if let cue = game.match.table.cueBall,
+           let at = game.sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: game.geometry.ballRadius)),
+           let down = mouse(.leftMouseDown, at: at, in: game) {
+            game.poolMouseDown(down, at: at)
+            let placing = game.drag == .placing
+            // Past the head string, where a break's ball in hand may not go.
+            let far = game.sceneView.screenPoint(of: PoolSpace.sceneSIMD([0.4, 0], height: game.geometry.ballRadius)) ?? at
+            if let move = mouse(.leftMouseDragged, at: far, in: game) { game.poolMouseDragged(move, at: far) }
+            let denied = !game.table.placementGhost.isHidden && !game.table.placementDeny.isHidden
+            game.gameDidBecomeActive()
+            game.gameWillResignActive()
+            let tidy = game.drag == .none && game.table.placementGhost.isHidden && game.table.placementDeny.isHidden
+                && game.table.placementRing.isHidden && !game.table.cue.node.isHidden
+                && game.match.table.cueBall.map { game.geometry.kitchenContains($0.position) } == true
+            t.check("leaving mid-drag puts the carried cue ball down in the kitchen and clears the red stand-in",
+                    placing && denied && tidy)
+        } else {
+            t.check("leaving mid-drag puts the carried cue ball down", false)
+        }
+
+        // The mouse held still asks for no frames.
+        game.runsSynchronously = false
+        game.redrawFrames = 0
+        game.rig.set(game.rig.goal, immediately: true)
+        let centre = CGPoint(x: game.sceneView.bounds.midX, y: game.sceneView.bounds.maxY * 0.7)
+        if let down = mouse(.leftMouseDown, at: centre, in: game) { game.poolMouseDown(down, at: centre) }
+        var wanted = 0
+        for _ in 0..<120 where game.frame(1.0 / 60) { wanted += 1 }
+        t.check("a mouse held still on the table asks for no frames (\(wanted) of 120)", game.drag == .orbit && wanted <= 3)
+        if let up = mouse(.leftMouseUp, at: centre, in: game) { game.poolMouseUp(up, at: centre) }
+
+        // VoiceOver: the meter's steps are the shot's strength.
+        let armed = game.armedPower
+        let stepped = game.powerMeter.accessibilityPerformIncrement()
+        t.check("VoiceOver's increment on Power changes the strength Shoot uses (\(armed) → \(game.armedPower))",
+                stepped && abs(game.armedPower - min(1, armed + 0.05)) < 1e-9 && game.powerMeter.armedPower == game.armedPower)
+        game.match.rules.shooter = PoolSeat.computer
+        game.phase = .thinking
+        game.refreshHUD()
+        t.check("…and does nothing on the computer's turn", !game.powerMeter.accessibilityPerformIncrement())
+        game.runsSynchronously = true
+    }
+
+    // MARK: The HUD
+
+    /// The first-time hints come and go; a finished game offers what next
+    /// once, not twice; the plates always have a second line.
+    private static func hudAndHints(_ t: TestReporter) {
+        let (game, window) = makeGame()
+        _ = window
+        // Practice: the shot leaves the turn with the player.
+        var practice = PoolOptions()
+        practice.mode = .practice
+        game.startNewGame(practice, breaker: PoolSeat.you)
+        game.options.hasAimed = false
+        game.options.hasShot = false
+        game.setViewMode(.aim, animated: false)
+        drawOnce(game)
+        t.check("a new player is shown how to aim first", game.aimHint != nil && game.shootHint == nil)
+        game.learned(aimed: true)
+        t.check("having aimed, that hint goes and stays gone, and how to shoot is shown",
+                game.aimHint == nil && game.shootHint != nil
+                    && Storage.load(PoolOptions.self, from: PoolGame.optionsName)?.hasAimed == true)
+        game.shootAtArmedPower()
+        t.check("having shot, so does the other",
+                game.shootHint == nil && Storage.load(PoolOptions.self, from: PoolGame.optionsName)?.hasShot == true)
+        game.startNewGame(game.match.options, breaker: PoolSeat.you)
+        t.check("a rematch keeps what the hints taught", game.options.hasAimed && game.options.hasShot)
+
+        game.startNewGame(PoolOptions(), breaker: PoolSeat.you)
+        t.check("before the break both plates have a second line",
+                !game.youPlate.seat.detail.isEmpty && !game.computerPlate.seat.detail.isEmpty)
+
+        PoolScenarios.playWinningEight(game)
+        t.check("a won game: the banner offers what next, the action bar stays empty, the stroke controls go",
+                game.match.isOver && game.resultShowing && game.actionBar.isHidden && game.powerMeter.isHidden
+                    && game.spinControl.isHidden && game.youPlate.seat.detail == NSLocalizedString("Winner", comment: ""))
+        Banner.banners(in: game.root).forEach { $0.dismiss(animated: false) }
+        t.check("…and once the banner has gone, the bar offers it instead",
+                !game.resultShowing && !game.actionBar.isHidden)
+    }
+
+    // MARK: Framing
+
+    /// What each camera shows, projected exactly: the aim view's object
+    /// ball is never behind the cue, however steeply it is raised; a shot's
+    /// balls stay inside the HUD from first moment to last; the thinking
+    /// view frames the whole table; the lamp never stands in front of the
+    /// cloth.
+    private static func framing(_ t: TestReporter) {
+        let (game, window) = makeGame()
+        _ = window
+        var options = PoolOptions()
+        options.hasAimed = true
+        options.hasShot = true
+        game.startNewGame(options, breaker: PoolSeat.you)
+        let viewport = game.viewportSize
+        let insets = game.hudInsets
+        let R = game.geometry.ballRadius
+        func inside(_ p: CGPoint?, margin: Double = 0) -> Bool {
+            guard let p else { return false }
+            return Double(p.x) >= insets.left - margin && Double(p.x) <= Double(viewport.width) - insets.right + margin
+                && Double(p.y) >= insets.top - margin && Double(p.y) <= Double(viewport.height) - insets.bottom + margin
+        }
+
+        // The cue ball against a cushion, in a corner, with a ball right
+        // behind it, and in the open.
+        let layouts: [(String, SIMD2<Double>?, Bool)] = [
+            ("in the open", nil, false), ("frozen to the head cushion", [-1.2410, 0.1], false),
+            ("in a corner", [-1.20, -0.57], false), ("with a ball right behind it", nil, true),
+        ]
+        var covered: [String] = []
+        for (name, spot, behind) in layouts {
+            var table = PoolScenarios.midGame()
+            if let spot { PoolScenarios.move(&table, 0, to: spot) }
+            PoolScenarios.setUp(game, table: table, shooter: PoolSeat.you, ballInHand: nil)
+            PoolScenarios.aim(game, at: 3, into: 3)
+            if behind, let cue = game.match.table.cueBall {
+                PoolScenarios.move(&game.match.table, 12, to: cue.position - PoolSpace.tableDirection(game.aim) * (2 * R + 0.004))
+                game.table.apply(table: game.match.table)
+            }
+            game.setViewMode(.aim, animated: false)
+            let pose = game.aimPose()
+            guard let object = game.match.table.ball(3),
+                  let ball = PoolFraming.project(PoolSpace.sceneDouble(object.position, height: R), from: pose, viewport: viewport),
+                  let edge = PoolFraming.project(PoolSpace.sceneDouble(object.position, height: 2 * R), from: pose,
+                                                 viewport: viewport) else {
+                covered.append("\(name): the object ball is behind the camera")
+                continue
+            }
+            let radius = abs(Double(edge.y - ball.y))
+            // Along the cue as drawn, tip to butt.
+            let tip = SIMD3<Double>(game.table.cue.node.simdWorldPosition)
+            let along = -SIMD3<Double>(game.table.cue.node.simdWorldFront)
+            var nearest = Double.infinity
+            for k in 0...60 {
+                let p = tip + along * (game.table.cue.length * Double(k) / 60)
+                guard let q = PoolFraming.project(p, from: pose, viewport: viewport) else { continue }
+                nearest = min(nearest, hypot(Double(q.x - ball.x), Double(q.y - ball.y)))
+            }
+            if nearest < radius + 8 { covered.append("\(name): the cue passes \(Int(nearest)) pt from the object ball") }
+            if !inside(ball, margin: 20) { covered.append("\(name): the object ball is outside the picture's free area") }
+        }
+        t.check("from behind the cue ball the object ball is in view and clear of the cue, even with the cue raised"
+                    + (covered.isEmpty ? "" : " (\(covered.joined(separator: "; ")))"), covered.isEmpty)
+
+        // A break, start to finish, from the camera that follows it.
+        game.startNewGame(options, breaker: PoolSeat.you)
+        if let cue = game.match.table.cueBall {
+            let apex = PoolScenarios.apexBall(game)
+            game.aim = atan2(apex.y - cue.position.y, apex.x - cue.position.x)
+            game.setViewMode(.aim, animated: false)
+            let shot = PoolShot(aim: game.aim, power: PoolGame.breakPower, tipVertical: -0.15, isBreak: true)
+            let result = PoolPhysics.simulate(shot, from: game.match.table, geometry: game.geometry, record: true)
+            if let trajectory = result.trajectory {
+                let pose = game.shotPose(for: trajectory)
+                var outside = 0, points = 0
+                for track in trajectory.tracks where track.keys.count > 1 {
+                    for key in track.keys {
+                        points += 1
+                        let p = PoolFraming.project(PoolSpace.sceneDouble(key.position, height: R), from: pose, viewport: viewport)
+                        if !inside(p, margin: 1) { outside += 1 }
+                    }
+                }
+                t.check("a break stays inside the HUD from its first moment to its last (\(points - outside) of \(points) positions)",
+                        outside == 0 && points > 100)
+            }
+        }
+
+        // The computer thinking: the whole table in frame.
+        game.match.rules.isBreakShot = false
+        game.match.rules.shooter = PoolSeat.computer
+        game.showThinking()
+        let watch = game.watchPose()
+        let d = game.table.dimensions
+        let corners = [SIMD2(d.outerX, d.outerY), SIMD2(-d.outerX, d.outerY), SIMD2(d.outerX, -d.outerY), SIMD2(-d.outerX, -d.outerY)]
+        t.check("the view while the computer thinks frames the whole table inside the HUD",
+                corners.allSatisfy { inside(PoolFraming.project(PoolSpace.sceneDouble($0, height: d.railTop), from: watch,
+                                                                viewport: viewport), margin: 1) })
+        // The lamp: out of the way from above, hanging in view from low down
+        // beyond the table.
+        t.check("the lamp steps aside wherever it would stand in front of the cloth, and hangs in view where it would not",
+                game.table.lampVisibility(from: game.topPose().position) == 0
+                    && game.table.lampVisibility(from: [-4.0, 0.55, 0]) > 0.99
+                    && game.table.lampVisibility(from: [0, 0.9, 0.1]) == 0)
+    }
+
     private static func snapshot(_ t: TestReporter) {
         let (game, window) = makeGame()
         _ = window
@@ -649,7 +927,9 @@ enum PoolTests {
             let b = Double(bytes[i]), g = Double(bytes[i + 1]), r = Double(bytes[i + 2])
             t.check("and the cloth is there in the picture (r \(Int(r)) g \(Int(g)) b \(Int(b)))", g > r + 30 && g > 60)
         }
-        t.check("the screenshot scenarios are the ones promised",
-                PoolGame.screenshotScenarios == ["break", "aim", "top", "ballInHand", "result", "rolling", "thinking"])
+        t.check("the screenshot scenarios are the ones promised, named the kit's way",
+                PoolGame.screenshotScenarios == ["break", "aim", "top", "ball-in-hand", "placing", "result", "rolling",
+                                                 "thinking", "rail", "corner", "ball-behind"]
+                    && PoolGame.screenshotScenarios.allSatisfy { $0 == $0.lowercased() && !$0.contains(" ") })
     }
 }

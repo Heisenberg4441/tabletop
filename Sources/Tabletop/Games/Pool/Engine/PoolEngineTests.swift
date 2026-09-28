@@ -16,6 +16,7 @@ import simd
 enum PoolEngineTests {
 
     static func run(_ t: TestReporter) {
+        let start = DispatchTime.now().uptimeNanoseconds
         geometry(t)
         motion(t)
         cushions(t)
@@ -28,6 +29,7 @@ enum PoolEngineTests {
         rules(t)
         persistence(t)
         computer(t)
+        t.info("pool engine tests took \(f(ms(start) / 1000, 1)) s (\(isRelease ? "release" : "debug: smaller samples"))")
     }
 
     // MARK: Helpers
@@ -289,18 +291,52 @@ enum PoolEngineTests {
         }
         t.info("corner pocket, straight in at 2.2 m/s, forgives \(window) mm of the ball's line")
         t.check("the corner forgives 50–72 mm straight in", window >= 50 && window <= 72)
+
+        // A ball the physics left hanging in a side pocket's mouth, past the
+        // rectangle of the noses: the next shot, elsewhere, must not move it
+        // (it would jump on screen, and the aiming guide, which sees it
+        // where it rests, would be wrong about it).
+        let side = g.pockets.filter { $0.kind == .side }.max { $0.center.y < $1.center.y } ?? g.pockets[4]
+        let hanger = SIMD2(side.center.x, side.center.y - side.captureRadius - 0.004)
+        let far = table([(0, SIMD2(-1.0, -0.3)), (5, hanger), (3, SIMD2(-0.6, -0.3))])
+        let tap = PoolPhysics.simulate(PoolShot(aim: 0, power: 0.25), from: far, record: true)
+        let stays = tap.final.ball(5).map { simd_distance($0.position, hanger) < 1e-12 && $0.pocket == nil } ?? false
+        let replayed = tap.trajectory?.pose(of: 5, at: 0).map { simd_distance($0.position, hanger) < 1e-12 } ?? false
+        t.check("a ball hanging in a pocket's mouth (\(f((hanger.y - (g.width / 2 - r)) * 1000, 0)) mm past the noses) stays exactly there through another shot",
+                hanger.y > g.width / 2 - r && stays && replayed)
+
+        // A slow ball driven into a gap narrower than itself, between a ball
+        // and a cushion, jams and stops — not chatter through hundreds of
+        // thousands of contacts (a table the computer once met in a
+        // look-ahead, to full precision).
+        let wedge = table([(0, [0.80747387140254678, 0.1823187469626904]), (1, [0.082707481475514003, -0.21448677905696159]),
+                           (2, [0.68502718364404913, 0.53674765409252589]), (3, [-0.69226924701158377, -0.57924165505760095]),
+                           (4, [0.74507551693387308, 0.3834500295989402]), (5, [0.6722103338837021, 0.28545492033543474]),
+                           (7, [1.0614788034743563, -0.099575166142411395]), (8, [1.2004005928333523, -0.26295017863797993]),
+                           (9, [-0.086836205943861558, -0.43625049707792801]), (10, [-0.34009624887447071, -0.13691449785752474]),
+                           (11, [-0.96073626405763612, -0.037699722634230555]), (12, [-1.1820465865555505, -0.17308474893899162]),
+                           (13, [-0.17200499056751953, 0.22022513657242285]), (14, [-1.0433547054782275, -0.55024338902114822]),
+                           (15, [0.78110107078281499, -0.55730130521098642])])
+        let jam = PoolPhysics.simulate(PoolShot(aim: -2.697790592754516, power: 0.55389739975451835, tipVertical: -0.6),
+                                       from: wedge, record: false)
+        t.check("a ball jammed between a ball and a cushion stops instead of chattering (\(jam.events.count) contacts)",
+                jam.events.count < 2000 && jam.final.isAtRest)
     }
 
     // MARK: The break
 
     static func breaking(_ t: TestReporter) {
         t.section("Pool engine: the break")
+        let full = PoolPhysics.strike(PoolShot(aim: 0, power: 1, isBreak: true)).0.x
+        t.check("the break has its own stroke: \(f(PoolShot.speed(forPower: 1, isBreak: true), 1)) m/s at full power, while the everyday meter still tops out at \(f(PoolShot.speed(forPower: 1), 1))",
+                abs(full - PoolShot.breakMaximumSpeed) < 1e-9 && PoolShot.speed(forPower: 1) == PoolShot.maximumSpeed
+                    && abs(PoolShot.speed(forPower: PoolShot.power(forSpeed: 9.5, isBreak: true), isBreak: true) - 9.5) < 1e-9)
         var moved = 0, rails = 0, potted = 0, dry = 0
-        let seeds: [UInt64] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        let seeds: [UInt64] = isRelease ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] : [1, 2, 3, 4]
         for seed in seeds {
             let rack = PoolRack.eightBall(seed: seed)
             guard let cue = rack.cueBall?.position else { continue }
-            let res = PoolPhysics.simulate(PoolShot(aim: aim(cue, g.footSpot), power: 1, tipVertical: -0.2),
+            let res = PoolPhysics.simulate(PoolShot(aim: aim(cue, g.footSpot), power: 1, tipVertical: -0.2, isBreak: true),
                                            from: rack, record: false)
             for b in rack.balls where b.number != 0 {
                 if let after = res.final.ball(b.number), after.pocket != nil || simd_distance(after.position, b.position) > 0.1 {
@@ -321,7 +357,7 @@ enum PoolEngineTests {
         // Symmetry: a rack with no jitter broken dead straight.
         for (name, rack) in [("eight-ball", PoolRack.eightBall(seed: 3, geometry: g, jitter: 0)),
                              ("nine-ball", PoolRack.nineBall(seed: 3, geometry: g, jitter: 0))] {
-            let res = PoolPhysics.simulate(PoolShot(aim: 0, power: 1), from: rack, record: false)
+            let res = PoolPhysics.simulate(PoolShot(aim: 0, power: 1, isBreak: true), from: rack, record: false)
             let on = res.final.balls.filter { $0.pocket == nil }.map(\.position)
             var worst = 0.0
             for p in on {
@@ -351,7 +387,7 @@ enum PoolEngineTests {
 
     static func fuzz(_ t: TestReporter) {
         t.section("Pool engine: tunnelling fuzz")
-        let count = isRelease ? 500 : 60
+        let count = isRelease ? 500 : 20
         var rng = DeterministicRNG(seed: 0xF022)
         var overlap = 0.0, outside = 0.0, lost = 0, unrested = 0, steps = 0
         let hl = g.length / 2 - r, hw = g.width / 2 - r
@@ -361,7 +397,8 @@ enum PoolEngineTests {
             let start = k % 5 == 0 ? PoolRack.eightBall(seed: UInt64(k)) : PoolRack.scattered(Array(numbers), seed: UInt64(k) &* 31)
             let power = k % 3 == 0 ? 1.0 : PoolRack.unit(&rng)
             let a = PoolRack.unit(&rng) * 2 * .pi, rho = PoolRack.unit(&rng).squareRoot(), phi = PoolRack.unit(&rng) * 2 * .pi
-            let shot = PoolShot(aim: a, power: power, tipSide: rho * cos(phi), tipVertical: rho * sin(phi))
+            // Racks are broken at the break's own, faster stroke.
+            let shot = PoolShot(aim: a, power: power, tipSide: rho * cos(phi), tipVertical: rho * sin(phi), isBreak: k % 5 == 0)
             let res = PoolPhysics.simulate(shot, from: start, geometry: g, record: false, parameters: .standard) { s, _ in
                 steps += 1
                 let on = s.balls.filter { $0.pocket == nil }
@@ -435,9 +472,13 @@ enum PoolEngineTests {
         var hand = PoolRules.newGame(.eightBall, breaker: 1)
         hand.isBreakShot = false
         hand.ballInHand = .anywhere
-        let d = PoolAI.decide(table: layout, rules: hand, difficulty: .medium, seed: 3)
         let digest = a.final.balls.reduce(0.0) { $0 + $1.position.x * Double($1.number + 1) + $1.position.y }
-        t.info("digest: break \(String(format: "%.12f", digest)), decision \(String(format: "%.12f %.12f", d.shot.aim, d.placement?.x ?? 0))")
+        if isRelease {
+            let d = PoolAI.decide(table: layout, rules: hand, difficulty: .medium, seed: 3)
+            t.info("digest: break \(String(format: "%.12f", digest)), decision \(String(format: "%.12f %.12f", d.shot.aim, d.placement?.x ?? 0))")
+        } else {
+            t.info("digest: break \(String(format: "%.12f", digest))")
+        }
     }
 
     // MARK: Performance
@@ -448,16 +489,17 @@ enum PoolEngineTests {
         let mid = PoolRack.scattered(Array(0...9), seed: 77)
         var shots: [PoolShot] = []
         var rng = DeterministicRNG(seed: 5)
-        for _ in 0..<40 {
+        for _ in 0..<(isRelease ? 40 : 10) {
             shots.append(PoolShot(aim: PoolRack.unit(&rng) * 2 * .pi, power: 0.2 + 0.4 * PoolRack.unit(&rng)))
         }
         var start = DispatchTime.now().uptimeNanoseconds
         for s in shots { _ = PoolPhysics.simulate(s, from: mid, record: false) }
         let typical = ms(start) / Double(shots.count)
         let rack = PoolRack.eightBall(seed: 1)
-        let breakShot = PoolShot(aim: aim(rack.cueBall?.position ?? .zero, g.footSpot), power: 1, tipVertical: -0.2)
+        let breakShot = PoolShot(aim: aim(rack.cueBall?.position ?? .zero, g.footSpot), power: 1, tipVertical: -0.2,
+                                 isBreak: true)
         start = DispatchTime.now().uptimeNanoseconds
-        let breaks = 10
+        let breaks = isRelease ? 10 : 2
         for _ in 0..<breaks { _ = PoolPhysics.simulate(breakShot, from: rack, record: false) }
         let breakTime = ms(start) / Double(breaks)
         start = DispatchTime.now().uptimeNanoseconds
@@ -531,6 +573,11 @@ enum PoolEngineTests {
         t.check("the 8 on the break is re-spotted and the breaker continues",
                 eightOnBreak.table.ball(8)?.pocket == nil && eightOnBreak.gameOver == nil && eightOnBreak.continuesTurn
                     && eightOnBreak.messages.contains(.eightBallRespotted))
+        t.check("…and, being back on the cloth, is not credited to anyone (credited \(eightOnBreak.credited))",
+                eightOnBreak.credited == [2])
+        let onlyEight = PoolRules.evaluate(result(first: 1, pocketed: [(8, 3)], final: full), before: full, state: open)
+        t.check("the 8 alone on the break keeps the break alive, credits nothing",
+                onlyEight.continuesTurn && onlyEight.credited.isEmpty && onlyEight.table.ball(8)?.pocket == nil)
         t.check("the table is open after the break", eightOnBreak.newState.isOpenTable)
 
         // Scratch on the break: the opponent's ball in hand behind the line.
@@ -677,7 +724,7 @@ enum PoolEngineTests {
         var nine = PoolRules.newGame(.nineBall, breaker: 1)
         nine.isBreakShot = false
         nine.ballInHand = nil
-        let samples = isRelease ? 200 : 60
+        let samples = isRelease ? 200 : 20
         for level in PoolDifficulty.allCases.reversed() {
             let plan = PoolAI.decide(table: shot, rules: nine, difficulty: level, seed: 0)
             var rng = DeterministicRNG(seed: 0xB0B)
@@ -705,7 +752,7 @@ enum PoolEngineTests {
 
         // Ball in hand: always somewhere legal.
         var illegal = 0, tried = 0, legalHits = 0, decided = 0
-        let layouts = isRelease ? 16 : 4
+        let layouts = isRelease ? 16 : 2
         for k in 0..<layouts {
             var shuffle = DeterministicRNG(seed: UInt64(k))
             let numbers = [0] + Array(1...15).shuffled(using: &shuffle).prefix(isRelease ? 4 + k % 8 : 3 + k % 3)
@@ -732,8 +779,47 @@ enum PoolEngineTests {
         let rack = PoolRack.eightBall(seed: 8)
         let breakDecision = PoolAI.decide(table: rack, rules: PoolRules.newGame(.eightBall, breaker: 1),
                                           difficulty: .hard, seed: 1)
-        t.check("the computer breaks from a legal kitchen spot at the rack", breakDecision.intent == .breakShot
-                    && breakDecision.placement.map { g.kitchenContains($0) } == true && breakDecision.shot.power > 0.9)
+        t.check("the computer breaks from a legal kitchen spot at the rack, with the break's stroke",
+                breakDecision.intent == .breakShot && breakDecision.placement.map { g.kitchenContains($0) } == true
+                    && breakDecision.shot.power > 0.9 && breakDecision.shot.isBreak)
+
+        // A short straight-in pot, where a centre-ball stroke follows the
+        // object ball in: every level pots it — Easy with stun — and none
+        // banks round the table instead.
+        let short = table([(0, SIMD2(0.4355, -0.3083)), (3, SIMD2(0.9779, -0.5079)), (12, SIMD2(-0.9, 0.35))])
+        var groups = PoolRules.newGame(.eightBall, breaker: 1)
+        groups.isBreakShot = false
+        groups.ballInHand = nil
+        groups.groups = [.stripes, .solids]
+        for level in isRelease ? PoolDifficulty.allCases : [.easy] {
+            let d = PoolAI.decide(table: short, rules: groups, difficulty: level, seed: 4)
+            let planned = PoolRules.evaluate(PoolPhysics.simulate(d.planned, from: short, record: false), before: short,
+                                             state: groups)
+            t.check("\(level.rawValue) plays a short straight-in pot as a pot, not a kick (\(d.intent)), and means to make it",
+                    d.intent == .pot(ball: 3, pocket: 3) || (d.intent.isPot && planned.continuesTurn && planned.foul == nil))
+        }
+        // Nine-ball, the 1 in plain sight: the computer hits it directly —
+        // a safety at worst — and never kicks off the cushions for it.
+        if isRelease {
+            var kicks = 0, fouls = 0
+            let nineTable = PoolRules.newGame(.nineBall, breaker: 1)
+            var ninePlay = nineTable
+            ninePlay.isBreakShot = false
+            ninePlay.ballInHand = nil
+            for k in 0..<24 {
+                var place = DeterministicRNG(seed: UInt64(k) &+ 0x91)
+                let cue = SIMD2(-0.9 + PoolRack.unit(&place) * 0.6, -0.4 + PoolRack.unit(&place) * 0.8)
+                let one = cue + SIMD2(0.3 + PoolRack.unit(&place) * 0.4, (PoolRack.unit(&place) - 0.5) * 0.3)
+                let layout = table([(0, cue), (1, one), (9, SIMD2(1.12, 0.52)), (5, SIMD2(0.6, -0.45))])
+                let d = PoolAI.decide(table: layout, rules: ninePlay, difficulty: .easy, seed: UInt64(k))
+                if d.intent == .kick { kicks += 1 }
+                let played = PoolRules.evaluate(PoolPhysics.simulate(d.shot, from: layout, record: false), before: layout,
+                                                state: ninePlay)
+                if played.foul != nil { fouls += 1 }
+            }
+            t.check("with the ball on in plain sight, Easy never kicks for it (\(kicks) kicks, \(fouls) fouls in 24)",
+                    kicks == 0 && fouls <= 3)
+        }
 
         // Thinking time on a full table (release only: debug is some seventy
         // times slower and says nothing about the shipped build).

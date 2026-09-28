@@ -14,19 +14,57 @@ extension PoolGame {
     // MARK: Camera poses
 
     /// Behind the cue ball, low, looking along the shot — the view the game
-    /// is played from.
+    /// is played from. Never below the cue: when it has to be raised over a
+    /// rail or a ball behind the cue ball, the camera rises with it and
+    /// looks down past it, so the cue never stands up the middle of the
+    /// picture in front of the shot.
     func aimPose() -> PoolCameraPose {
         let R = geometry.ballRadius
         let cue = match.table.cueBall?.position ?? geometry.headSpot
-        let ahead = cue + PoolSpace.tableDirection(aim) * (0.26 * aimDistance)
+        let tipHeight = R + tipVertical * 0.5 * R
+        let raised = cueElevation(from: cue, tipHeight: tipHeight, pull: 0)
+        var pitch = max(aimPitch, min(Self.highestAimPitch, raised + 6 * .pi / 180))
+        var distance = aimDistance
+        let forced = pitch > aimPitch + 0.01
+        // Looking down that steeply, the camera stands back far enough to
+        // keep the shot in the picture below the players' plates: the ghost
+        // ball, or wherever the aim meets a cushion.
+        let reach = forced
+            ? min(2.2, simd_distance(PoolAimGuide.predict(aim: aim, from: match.table, geometry: geometry).ghostBallCenter,
+                                     cue) + 2 * R)
+            : 0
+        let limit = 0.5 * tan(20 * Double.pi / 180)
+        var lead = Self.aimLead
+        for _ in 0..<60 {
+            // Looking steeply down, the view leads the cue ball by less, so
+            // the ball stays well clear of the action bar.
+            lead = min(Self.aimLead, 0.55 * tan(20 * Double.pi / 180) / (sin(pitch) + 0.2 * cos(pitch)))
+            if forced {
+                let k = sin(pitch) - limit * cos(pitch)
+                if k > 0 { distance = max(aimDistance, min(Self.farthestAim, reach * k / (limit + lead * k))) }
+            }
+            // And high enough over the cue's line where the camera stands,
+            // with room for the thickness of the butt.
+            let behind = distance * cos(pitch) - lead * distance
+            let height = R + distance * sin(pitch)
+            if pitch >= Self.highestAimPitch || height >= tipHeight + max(0, behind) * tan(raised) + 0.045 { break }
+            pitch += 0.02
+        }
+        let ahead = cue + PoolSpace.tableDirection(aim) * (lead * distance)
         return PoolCameraPose(focus: [ahead.x, R, -ahead.y], yaw: PoolCameraPose.yaw(forAim: aim),
-                              pitch: aimPitch, distance: aimDistance, fieldOfView: 40)
+                              pitch: min(pitch, Self.highestAimPitch), distance: distance, fieldOfView: 40)
     }
+
+    /// How far ahead of the cue ball the aim view looks, per metre of its
+    /// distance: the object ball matters more than the cue ball.
+    static let aimLead = 0.26
+    static let highestAimPitch = 1.35
+    static let farthestAim = 2.6
 
     /// Straight down on the whole table, the long way across the screen,
     /// framed inside the HUD.
     func topPose() -> PoolCameraPose {
-        let size = sceneView.bounds.size.width > 10 ? sceneView.bounds.size : CGSize(width: 1200, height: 762)
+        let size = viewportSize
         let fov = 30.0
         let t = tan(fov / 2 * .pi / 180)
         let aspect = Double(size.width / size.height)
@@ -40,44 +78,57 @@ extension PoolGame {
         return PoolCameraPose(focus: [0, 0, 0], yaw: 0, pitch: .pi / 2, distance: distance, fieldOfView: fov)
     }
 
-    /// High over the computer's shoulder while it thinks.
+    /// Over the computer's shoulder while it thinks: from the end of the
+    /// table its cue ball is at, turned a little across from its side, the
+    /// whole table framed between the HUD's edges — with the lamp hanging
+    /// over the far end.
     func watchPose() -> PoolCameraPose {
         if viewMode == .top { return topPose() }
         let cue = match.table.cueBall?.position ?? geometry.headSpot
-        var toCentre = -cue
-        if simd_length(toCentre) < 0.2 { toCentre = [1, 0] }
-        let a = atan2(toCentre.y, toCentre.x)
-        let focus = cue * 0.3
-        return PoolCameraPose(focus: [focus.x, 0, -focus.y], yaw: PoolCameraPose.yaw(forAim: a),
-                              pitch: 0.33, distance: 3.1, fieldOfView: 40)
+        let toward = cue.x <= 0 ? 1.0 : -1.0
+        let side = cue.y >= 0 ? 1.0 : -1.0
+        let look = atan2(-side * 0.35, toward)
+        let d = table.dimensions
+        var corners: [SIMD3<Double>] = []
+        for sx in [-1.0, 1] {
+            for sy in [-1.0, 1] {
+                corners.append(SIMD3(sx * d.outerX, d.railTop, -sy * d.outerY))
+            }
+        }
+        return PoolFraming.fit(corners, yaw: PoolCameraPose.yaw(forAim: look), pitch: 0.40, fieldOfView: 40,
+                               viewport: viewportSize, insets: hudInsets, distance: 1.5...8) ?? topPose()
     }
 
     /// For a shot about to roll: up and back, far enough to keep every ball
-    /// it will move in view — worked out from the whole recorded shot, so the
-    /// camera makes one calm move instead of chasing.
-    func shotPose(for trajectory: PoolTrajectory, from firstContact: Double = 0) -> PoolCameraPose {
+    /// it will move in view from start to finish — worked out from the whole
+    /// recorded shot, so the camera makes one calm move instead of chasing.
+    /// Steeper for a shot that spans the table; from above when nothing
+    /// else will do.
+    func shotPose(for trajectory: PoolTrajectory) -> PoolCameraPose {
         if viewMode == .top { return topPose() }
-        let start = trajectory.poses(at: 0)
-        var lo = SIMD2<Double>(repeating: .infinity), hi = SIMD2<Double>(repeating: -.infinity)
-        // From the first contact on: where the cue ball set off from is
-        // behind the camera's interest by then.
-        let from = min(max(0, firstContact), trajectory.duration)
-        let steps = 60
-        for i in 0...steps {
-            let t = from + (trajectory.duration - from) * Double(i) / Double(steps)
-            for (n, pose) in trajectory.poses(at: t) {
-                let moved = start[n].map { simd_distance($0.position, pose.position) > 0.004 } ?? true
-                guard moved || n == 0 else { continue }
-                lo = simd_min(lo, pose.position)
-                hi = simd_max(hi, pose.position)
+        let R = geometry.ballRadius
+        var points: [SIMD3<Double>] = []
+        for track in trajectory.tracks {
+            guard let first = track.keys.first else { continue }
+            let moves = track.pocket != nil || track.keys.contains { simd_distance($0.position, first.position) > 0.004 }
+            guard moves else { continue }
+            for key in track.keys { points.append(PoolSpace.sceneDouble(key.position, height: R)) }
+            if let id = track.pocket, let pocket = geometry.pockets.first(where: { $0.id == id }) {
+                points.append(PoolSpace.sceneDouble(pocket.center, height: R))
             }
         }
-        guard lo.x.isFinite else { return rig.goal }
-        let centre = (lo + hi) / 2
-        let span = max(hi.x - lo.x, (hi.y - lo.y) * 1.4)
-        let distance = max(1.35, min(3.3, 0.9 + span * 1.05))
-        return PoolCameraPose(focus: [centre.x, 0, -centre.y], yaw: rig.current.yaw, pitch: 0.95,
-                              distance: distance, fieldOfView: 40)
+        guard !points.isEmpty else { return rig.goal }
+        // The balls are round: keep their whole width clear of the HUD.
+        var insets = hudInsets
+        insets.top += 12; insets.bottom += 12; insets.left += 12; insets.right += 12
+        let yaw = rig.current.yaw
+        for pitch in [0.95, 1.08, 1.22, 1.36] {
+            if let pose = PoolFraming.fit(points, yaw: yaw, pitch: pitch, fieldOfView: 40, viewport: viewportSize,
+                                          insets: insets, distance: 1.35...5.2) {
+                return pose
+            }
+        }
+        return topPose()
     }
 
     /// Where the camera belongs right now, in the chosen view.
@@ -88,16 +139,37 @@ extension PoolGame {
         case .over: return topPose()
         case .rolling, .striking:
             if let playback, let trajectory = playback.result.trajectory {
-                return shotPose(for: trajectory, from: Self.firstContactTime(playback.result))
+                return shotPose(for: trajectory)
             }
             return rig.goal
         default: return aimPose()
         }
     }
 
-    func setCamera(_ pose: PoolCameraPose, animated: Bool) {
+    /// The scene view's size, or the window's usual one before it has any.
+    var viewportSize: CGSize {
+        sceneView.bounds.size.width > 10 ? sceneView.bounds.size : CGSize(width: 1200, height: 762)
+    }
+
+    /// What the HUD covers at each edge of the scene view: the players'
+    /// plates at the top, the action bar at the bottom, the power meter and
+    /// the spin control at the sides.
+    var hudInsets: PoolFraming.Insets {
+        PoolFraming.Insets(top: Double(Self.plateTop + PoolPlayerPlate.height + 12),
+                           left: Double(Self.hudSide + PoolPowerMeter.size.width + 12),
+                           bottom: Double(actionBar.reservedHeight + 8),
+                           right: Double(Self.hudSide + PoolSpinControl.size.width + 12))
+    }
+
+    /// `following` is for a drag: the camera keeps up exactly, but for a
+    /// pitch the cue forces, which glides.
+    func setCamera(_ pose: PoolCameraPose, animated: Bool, following: Bool = false) {
         let cut = !animated || !Motion.isEnabled || runsSynchronously || view.window == nil
-        rig.set(pose, immediately: cut)
+        if following && !runsSynchronously && Motion.isEnabled {
+            rig.follow(pose)
+        } else {
+            rig.set(pose, immediately: cut)
+        }
         applyCamera()
         if !rig.isSettled { requestFrames() }
     }
@@ -105,12 +177,16 @@ extension PoolGame {
     func applyCamera() {
         guard isViewLoaded else { return }
         table.apply(camera: rig.current)
+        table.cue.fade(near: SIMD3<Float>(rig.current.position))
         updateBallInHandBadge()
+        updateHints()
+        if denyBadge != nil { updateDenyBadge() }
     }
 
     func setViewMode(_ mode: ViewMode, animated: Bool = true) {
         viewMode = mode
         setCamera(naturalPose(), animated: animated)
+        refreshAim()
         refreshHUD()
         redraw()
     }
@@ -140,6 +216,7 @@ extension PoolGame {
             table.cue.place(ballCentre: PoolSpace.sceneSIMD(cue.position, height: R), aim: aim, tipSide: tipSide,
                             tipVertical: tipVertical, radius: R, pullBack: cuePull,
                             elevation: cueElevation(from: cue.position, tipHeight: tipHeight))
+            table.cue.fade(near: SIMD3<Float>(rig.current.position))
         }
         let guidesWanted = (phase == .aiming || phase == .charging) && !match.shooterIsComputer
             && match.options.guides != .off && drag != .placing && !match.isOver
@@ -158,6 +235,7 @@ extension PoolGame {
         table.kitchen.isHidden = !(playerHasBallInHand && match.rules.ballInHand == .kitchen
                                    && (drag == .placing || viewMode == .top))
         updateBallInHandBadge()
+        updateHints()
         redraw()
     }
 
@@ -165,35 +243,43 @@ extension PoolGame {
         if hidden { table.guides.hide() } else { refreshAim() }
     }
 
-    /// How steeply the cue has to be held to clear what lies behind the cue
-    /// ball — the cushion and rail when it is near one, and any ball in the
-    /// way — the way a player raises the butt. Never flatter than a few
-    /// degrees.
-    func cueElevation(from centre: SIMD2<Double>, tipHeight: Double) -> Double {
+    /// How steeply the cue is held to clear what lies behind the cue ball,
+    /// the way a player raises the butt; never flatter than a few degrees.
+    ///
+    /// A cushion or the rail behind the ball: the cue rests on it, as it
+    /// would on a rail bridge, and is raised no further — a butt tipped up
+    /// higher only stands in front of the shot. A ball close behind is
+    /// different: the cue must clear it, however steep that is, and the
+    /// camera rises with it (`aimPose`). `pull` is how far the cue is drawn
+    /// back (the current draw when nil).
+    func cueElevation(from centre: SIMD2<Double>, tipHeight: Double, pull: Double? = nil) -> Double {
         let R = geometry.ballRadius
         let d = table.dimensions
         let back = -PoolSpace.tableDirection(aim)
-        var elevation = 4.5 * Double.pi / 180
+        let drawn = pull ?? cuePull
+        var overRail = 0.0, overBalls = 0.0
         var s = 0.02
         while s < 1.4 {
-            let p = centre + back * (R + cuePull + s)
+            let p = centre + back * (R + drawn + s)
             let r = table.cue.radius(at: s) + 0.003
-            var needed: Double?
             if d.isOverRail(p) {
-                needed = d.railTop + r
+                overRail = max(overRail, atan2(d.railTop + r - tipHeight, s))
             } else if d.isOverCushion(p) {
-                needed = d.cushionTop + r
+                overRail = max(overRail, atan2(d.cushionTop + r - tipHeight, s))
             }
-            for ball in match.table.balls where ball.number != 0 && ball.pocket == nil {
-                if simd_distance(ball.position, p) < R + r {
-                    needed = max(needed ?? 0, 2 * R + r)
-                }
+            for ball in match.table.balls where ball.number != 0 && ball.pocket == nil
+                && simd_distance(ball.position, p) < R + r {
+                overBalls = max(overBalls, atan2(2 * R + r - tipHeight, s))
             }
-            if let needed { elevation = max(elevation, atan2(needed - tipHeight, s)) }
             s += 0.02
         }
-        return min(elevation, 1.15)
+        let flattest = 4.5 * Double.pi / 180
+        return min(max(flattest, min(overRail, Self.railBridgeElevation), overBalls), 1.15)
     }
+
+    /// The most a rail behind the cue ball raises the cue: about a rail
+    /// bridge's angle.
+    static let railBridgeElevation = 30 * Double.pi / 180
 
     // MARK: Spin
 
@@ -203,9 +289,16 @@ extension PoolGame {
         spinControl.set(side: side, vertical: vertical)
         refreshAim()
         refreshHUD()
+        // The tip height changes how high the cue has to be held.
+        if phase == .aiming && viewMode == .aim && !match.shooterIsComputer {
+            setCamera(aimPose(), animated: true, following: true)
+        }
     }
 
     // MARK: The HUD
+
+    static let plateTop: CGFloat = 10
+    static let hudSide: CGFloat = 26
 
     func layoutHUD() {
         guard isViewLoaded else { return }
@@ -219,19 +312,34 @@ extension PoolGame {
             vignette.needsDisplay = true
         }
         layoutPlates()
-        let middle = inset + (b.height - inset) / 2 - 12
+        // The meter and the spin control stand in the bottom corners, level
+        // with the action bar: in the view from behind the cue ball that is
+        // the near cloth behind it, where balls seldom are, and from above
+        // it is beside the table, not over it.
+        let bottom = b.height - actionBar.bottomMargin
         let meter = PoolPowerMeter.size
-        powerMeter.frame = CGRect(x: 26, y: (middle - meter.height / 2).rounded(), width: meter.width, height: meter.height)
+        powerMeter.frame = CGRect(x: Self.hudSide, y: bottom - meter.height, width: meter.width, height: meter.height)
         let spin = PoolSpinControl.size
-        spinControl.frame = CGRect(x: b.width - 26 - spin.width, y: (middle - spin.height / 2).rounded(),
+        spinControl.frame = CGRect(x: b.width - Self.hudSide - spin.width, y: bottom - spin.height,
                                    width: spin.width, height: spin.height)
-        if resized && viewMode == .top { setCamera(topPose(), animated: false) }
+        for (caption, control) in [(powerCaption, powerMeter), (spinCaption, spinControl)] as [(NSTextField, NSView)] {
+            let width = Typography.fittingWidth(caption), height = ceil(caption.intrinsicContentSize.height)
+            caption.frame = CGRect(x: (control.frame.midX - width / 2).rounded(), y: control.frame.minY - height - 3,
+                                   width: width, height: height)
+        }
+        if resized {
+            // Every framing depends on the view's shape.
+            if viewMode == .top || phase == .over || phase == .thinking || phase == .rolling {
+                setCamera(naturalPose(), animated: false)
+            }
+        }
         updateBallInHandBadge()
+        updateHints()
     }
 
     private func layoutPlates() {
         let inset = TabletopChrome.topInset(for: root)
-        let y = inset + 10
+        let y = inset + Self.plateTop
         let w = root.bounds.width
         let youWidth = youPlate.preferredWidth, computerWidth = computerPlate.preferredWidth
         youPlate.frame = CGRect(x: 18, y: y, width: youWidth, height: PoolPlayerPlate.height)
@@ -280,8 +388,10 @@ extension PoolGame {
         let top = viewMode == .top
         var actions: [ChromeAction]
         if over {
-            // The game is decided: the only choices left are what to play next.
-            actions = [
+            // The game is decided: the only choices left are what to play
+            // next — offered by the result banner while it is up, and here
+            // once it has gone.
+            actions = resultShowing ? [] : [
                 ChromeAction(id: "new", title: NSLocalizedString("New Game…", comment: "pool button"),
                              symbolName: "plus") { [weak self] in self?.presentOptions() },
                 ChromeAction(id: "rematch", title: NSLocalizedString("Rematch", comment: "pool button"),
@@ -302,7 +412,7 @@ extension PoolGame {
             ]
             if match.isPractice {
                 actions.append(ChromeAction(id: "rerack", title: NSLocalizedString("Re-rack", comment: "pool button"),
-                                            symbolName: "triangle", isEnabled: phase != .rolling && phase != .striking) { [weak self] in
+                                            symbolName: "triangle", isEnabled: !isShotInFlight) { [weak self] in
                     self?.rematch(nil)
                 })
             }
@@ -313,14 +423,23 @@ extension PoolGame {
             })
         }
         actionBar.setActions(actions, animated: view.window != nil)
+        // An empty bar would still show its glass.
+        actionBar.isHidden = actions.isEmpty
         powerMeter.isEnabled = isPlayersTurn
         spinControl.isEnabled = isPlayersTurn
+        // Over a finished game the stroke controls have nothing to say.
+        for control in [powerMeter, spinControl, powerCaption, spinCaption] as [NSView] { control.isHidden = over }
+        updateHints()
     }
+
+    /// A struck shot that has not yet been taken into the game: the cue
+    /// going through, or the balls rolling.
+    var isShotInFlight: Bool { phase == .rolling || (phase == .striking && (playback != nil || strokeInFlight != nil)) }
 
     /// The line under a player's name.
     private func detail(for player: Int) -> String {
         if let winner = match.rules.winner {
-            return winner == player ? NSLocalizedString("Wins the game", comment: "pool: the winner's plate")
+            return winner == player ? NSLocalizedString("Winner", comment: "pool: the winner's plate")
                 : NSLocalizedString("Game over", comment: "pool: the loser's plate")
         }
         switch match.options.mode {
@@ -331,7 +450,11 @@ extension PoolGame {
                     : PoolEngineText.group(group)
             }
             if match.rules.isBreakShot {
-                return match.rules.shooter == player ? NSLocalizedString("To break", comment: "pool: this player breaks") : ""
+                if match.rules.shooter == player { return NSLocalizedString("To break", comment: "pool: this player breaks") }
+                // The other player, before the break: who they are.
+                return player == PoolSeat.computer
+                    ? PoolEngineText.difficulty(match.options.difficulty)
+                    : NSLocalizedString("Waiting to play", comment: "pool: the player's plate while the computer breaks")
             }
             return NSLocalizedString("Open table", comment: "pool: groups not yet decided")
         case .nineBall:
@@ -350,33 +473,107 @@ extension PoolGame {
                    placement: .bottom(offset: actionBar.reservedHeight + Spacing.s))
     }
 
-    // MARK: Ball in hand
+    // MARK: Badges beside the cue ball
+
+    /// The cue ball on screen, in the root view: its centre, its radius, and
+    /// which way the shot runs from it (a unit vector, y down).
+    private func cueBallOnScreen() -> (centre: CGPoint, radius: CGFloat, ahead: CGVector)? {
+        guard let cue = match.table.cueBall, cue.pocket == nil else { return nil }
+        let R = geometry.ballRadius
+        guard let c = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: R)),
+              let top = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: R * 2)),
+              let front = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position + PoolSpace.tableDirection(aim) * 0.1,
+                                                                        height: R))
+        else { return nil }
+        let centre = sceneView.convert(c, to: root)
+        let ahead = sceneView.convert(front, to: root)
+        let dx = ahead.x - centre.x, dy = ahead.y - centre.y
+        let length = max(hypot(dx, dy), 0.001)
+        return (centre, max(abs(top.y - c.y), 4), CGVector(dx: dx / length, dy: dy / length))
+    }
+
+    /// Beside the cue ball, square to the line of the shot — so neither the
+    /// aiming line ahead of it nor the cue behind it is covered — on the
+    /// right-hand side of the line, or its left when `left`. Nil when the
+    /// point would be off the table's part of the screen.
+    private func besideCueBall(left: Bool) -> (point: CGPoint, anchor: TableBadge.Anchor)? {
+        guard let ball = cueBallOnScreen() else { return nil }
+        // The two sides square to the shot; "right" is the one further
+        // right on screen.
+        var side = CGVector(dx: -ball.ahead.dy, dy: ball.ahead.dx)
+        if side.dx < 0 || (side.dx == 0 && side.dy > 0) { side = CGVector(dx: -side.dx, dy: -side.dy) }
+        if left { side = CGVector(dx: -side.dx, dy: -side.dy) }
+        let reach = ball.radius * 1.3 + 4
+        let at = CGPoint(x: ball.centre.x + side.dx * reach, y: ball.centre.y + side.dy * reach)
+        guard root.bounds.insetBy(dx: 40, dy: 40).contains(at) else { return nil }
+        let anchor: TableBadge.Anchor = abs(side.dx) >= abs(side.dy)
+            ? (side.dx >= 0 ? .trailing : .leading)
+            : (side.dy >= 0 ? .below : .above)
+        return (at, anchor)
+    }
 
     func updateBallInHandBadge() {
         guard isViewLoaded else { return }
-        guard playerHasBallInHand, drag != .placing, let cue = match.table.cueBall, cue.pocket == nil,
-              let centre = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: geometry.ballRadius)),
-              let top = sceneView.screenPoint(of: PoolSpace.sceneSIMD(cue.position, height: geometry.ballRadius * 2))
-        else {
+        guard playerHasBallInHand, drag != .placing, let spot = besideCueBall(left: false) else {
             hideBallInHandBadge()
             return
         }
-        // A little right of the ball's own edge on screen.
-        let radius = abs(top.y - centre.y)
-        let at = sceneView.convert(CGPoint(x: centre.x + radius * 1.3 + 4, y: centre.y), to: root)
-        guard root.bounds.insetBy(dx: 40, dy: 40).contains(at) else { hideBallInHandBadge(); return }
-        // Beside the ball, clear of the aiming line that runs up from it.
         if let badge = ballInHandBadge, badge.superview != nil {
-            badge.move(to: at, anchor: .trailing)
+            badge.move(to: spot.point, anchor: spot.anchor)
         } else {
             ballInHandBadge = TableBadge.show(NSLocalizedString("Drag to place", comment: "pool badge: ball in hand"),
                                               symbolName: "arrow.up.and.down.and.arrow.left.and.right",
-                                              in: root, at: at, anchor: .trailing, animated: view.window != nil)
+                                              in: root, at: spot.point, anchor: spot.anchor, animated: view.window != nil)
         }
     }
 
     func hideBallInHandBadge() {
         ballInHandBadge?.hide(animated: false)
         ballInHandBadge = nil
+    }
+
+    // MARK: First-time hints
+
+    /// Until the player has aimed by dragging and taken a shot, a quiet
+    /// badge says how — one thing at a time: first, beside the cue ball,
+    /// how to aim; once they have, beside the meter, how to shoot.
+    func updateHints() {
+        guard isViewLoaded else { return }
+        let ready = isPlayersTurn && phase == .aiming && drag == .none && optionsCard?.isPresented != true
+        if ready, !options.hasAimed, viewMode == .aim, let spot = besideCueBall(left: true) {
+            if let badge = aimHint, badge.superview != nil {
+                badge.move(to: spot.point, anchor: spot.anchor)
+            } else {
+                aimHint = TableBadge.show(NSLocalizedString("Drag across the table to aim", comment: "pool hint"),
+                                          symbolName: "arrow.left.and.right", in: root, at: spot.point,
+                                          anchor: spot.anchor, animated: view.window != nil)
+            }
+        } else {
+            aimHint?.hide(animated: false)
+            aimHint = nil
+        }
+        if ready, options.hasAimed, !options.hasShot, !powerMeter.isHidden {
+            let at = CGPoint(x: powerMeter.frame.maxX, y: powerMeter.frame.minY + 44)
+            if let badge = shootHint, badge.superview != nil {
+                badge.move(to: at, anchor: .trailing)
+            } else {
+                shootHint = TableBadge.show(NSLocalizedString("Pull down to shoot", comment: "pool hint: the power meter"),
+                                            symbolName: "arrow.down", in: root, at: at, anchor: .trailing,
+                                            animated: view.window != nil)
+            }
+        } else {
+            shootHint?.hide(animated: false)
+            shootHint = nil
+        }
+    }
+
+    /// The player has shown they know how: `aimed` by dragging, `shot`.
+    func learned(aimed: Bool = false, shot: Bool = false) {
+        var changed = false
+        if aimed && !options.hasAimed { options.hasAimed = true; changed = true }
+        if shot && !options.hasShot { options.hasShot = true; changed = true }
+        guard changed else { return }
+        Storage.save(options, to: Self.optionsName)
+        updateHints()
     }
 }

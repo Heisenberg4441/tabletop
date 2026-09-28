@@ -202,7 +202,7 @@ enum PoolPhysics {
         let r = geometry.ballRadius
         let tip = shot.clampedTip * prm.safeTipOffset          // in radii
         let a = tip.x, b = tip.y
-        let centreSpeed = PoolShot.speed(forPower: shot.power)
+        let centreSpeed = shot.speed
         let speed = centreSpeed * (1 + prm.ballToCueMass)
             / (1 + prm.ballToCueMass + 2.5 * (a * a + b * b))
         let d = shot.aim.isFinite ? shot.direction : SIMD2(1, 0)
@@ -265,6 +265,10 @@ struct PoolSimulator {
     var stopAtFirstCueContact = false
     var observer: ((PoolTableState, Double) -> Void)?
     var recorder: PoolTrajectoryRecorder?
+    /// Each ball's recent contacts, for catching a ball wedged between a
+    /// ball and a cushion (see `settleWedged`): how many since when.
+    var recentContacts: [Int] = []
+    var recentSince: [Double] = []
 
     // Derived constants.
     let r: Double
@@ -310,6 +314,8 @@ struct PoolSimulator {
             classify(i)
         }
         separateOverlaps(all: true)
+        recentContacts = Array(repeating: 0, count: balls.count)
+        recentSince = Array(repeating: 0, count: balls.count)
         if record {
             recorder = PoolTrajectoryRecorder(balls: balls, geometry: geometry)
         }
@@ -320,12 +326,23 @@ struct PoolSimulator {
     }
 
     /// A damaged save or a bad input must not poison the arithmetic.
+    ///
+    /// A ball the physics itself left resting in a pocket's mouth or throat,
+    /// past the rectangle of the noses but short of the drop, is where it
+    /// is: moving it back onto the rectangle would make it jump as the next
+    /// shot starts, and the aiming guide (which sees where it really rests)
+    /// would be wrong about it. Only a ball outside the table's outline
+    /// anywhere else is brought back; `separateOverlaps` then eases a ball
+    /// in a throat off any facing it touches.
     mutating func sanitise(_ i: Int) {
         if !(balls[i].p.x.isFinite && balls[i].p.y.isFinite) { balls[i].p = geo.headSpot }
         if !(balls[i].v.x.isFinite && balls[i].v.y.isFinite) { balls[i].v = .zero }
         if !(balls[i].w.x.isFinite && balls[i].w.y.isFinite && balls[i].w.z.isFinite) { balls[i].w = .zero }
+        let p = balls[i].p
         let hx = geo.length / 2 - r, hy = geo.width / 2 - r
-        balls[i].p = SIMD2(min(max(balls[i].p.x, -hx), hx), min(max(balls[i].p.y, -hy), hy))
+        guard abs(p.x) > hx || abs(p.y) > hy else { return }
+        let inThroat = geo.pockets.contains { simd_distance(p, $0.center) < $0.captureRadius + 2 * r }
+        if !inThroat { balls[i].p = SIMD2(min(max(p.x, -hx), hx), min(max(p.y, -hy), hy)) }
     }
 
     // MARK: States
@@ -736,6 +753,36 @@ struct PoolSimulator {
             if c.j >= 0 { classify(c.j) }
             recorder?.mark(c.i)
             if c.j >= 0 { recorder?.mark(c.j) }
+        }
+        settleWedged(contacts)
+    }
+
+    /// A slow ball caught in a gap narrower than itself — between a ball and
+    /// a cushion, or two balls — is struck from both sides at once, over
+    /// and over: each impulse sends it into the other side, and friction
+    /// keeps driving it back in. A real ball simply jams there and stops.
+    /// Here it would chatter through hundreds of thousands of contacts
+    /// before friction won; so a ball that has been in contact more than
+    /// forty times in twenty milliseconds, and is barely moving, stops dead.
+    mutating func settleWedged(_ contacts: [Contact]) {
+        guard !recentContacts.isEmpty else { return }
+        var jammed: [Int] = []
+        for c in contacts {
+            for i in c.j >= 0 ? [c.i, c.j] : [c.i] {
+                if time - recentSince[i] > 0.02 {
+                    recentSince[i] = time
+                    recentContacts[i] = 0
+                }
+                recentContacts[i] += 1
+                if recentContacts[i] > 40 && simd_length(balls[i].v) < 0.5 && !jammed.contains(i) { jammed.append(i) }
+            }
+        }
+        for i in jammed where balls[i].mode != .pocketed {
+            balls[i].v = .zero
+            balls[i].w = .zero
+            balls[i].mode = .stationary
+            recentContacts[i] = 0
+            recorder?.mark(i)
         }
     }
 

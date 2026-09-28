@@ -61,6 +61,7 @@ extension PoolGame {
         phase = .aiming
         cueVisible = true
         cuePull = 0
+        table.cue.node.opacity = 1
         if let spin = playerSpin {
             playerSpin = nil
             tipSide = spin.side
@@ -153,6 +154,7 @@ extension PoolGame {
         func lineUp() {
             guard gen == generation else { return }
             cueVisible = true
+            table.cue.node.opacity = 1
             cuePull = 0.05
             if playerSpin == nil { playerSpin = (tipSide, tipVertical) }
             tipSide = shot.tipSide
@@ -303,8 +305,13 @@ extension PoolGame {
     /// balls start moving when both are done.
     func strike(_ shot: PoolShot) {
         guard match.table.cueBall.map({ $0.pocket == nil }) ?? false else { return }
+        // The break is struck with the break's own, faster stroke — the
+        // rules know when it is one.
+        var shot = shot
+        shot.isBreak = match.rules.isBreakShot
+        if !match.shooterIsComputer { learned(shot: true) }
+        endDrag()
         phase = .striking
-        drag = .none
         guides(hidden: true)
         table.kitchen.isHidden = true
         table.placementGhost.isHidden = true
@@ -315,6 +322,7 @@ extension PoolGame {
         strokeLanded = false
         let gen = generation
         let before = match.table
+        strokeInFlight = (shot, before)
 
         if runsSynchronously {
             pendingResult = PoolPhysics.simulate(shot, from: before, geometry: geometry, record: true)
@@ -324,7 +332,9 @@ extension PoolGame {
                 let result = PoolPhysics.simulate(shot, from: before, geometry: geometry, record: true)
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
-                        guard gen == self.generation, self.phase == .striking else { return }
+                        // Dropped if the shot was already taken into the
+                        // game (a quit or a new game settled it).
+                        guard gen == self.generation, self.phase == .striking, self.strokeInFlight != nil else { return }
                         self.pendingResult = result
                         self.startPlaybackIfReady()
                     }
@@ -347,6 +357,7 @@ extension PoolGame {
     private func startPlaybackIfReady() {
         guard phase == .striking, strokeLanded, let result = pendingResult else { return }
         pendingResult = nil
+        strokeInFlight = nil
         let outcome = PoolRules.evaluate(result, before: match.table, state: match.rules, geometry: geometry)
         let duration = result.trajectory?.duration ?? 0
         playback = Playback(result: result, outcome: outcome, time: 0, duration: duration)
@@ -365,7 +376,7 @@ extension PoolGame {
             self.refreshAim()
         }), decorative: true)
         if let trajectory = result.trajectory {
-            setCamera(shotPose(for: trajectory, from: Self.firstContactTime(result)), animated: true)
+            setCamera(shotPose(for: trajectory), animated: true)
         }
         refreshHUD()
         if runsSynchronously || duration <= 0 {
@@ -385,15 +396,9 @@ extension PoolGame {
         guides(hidden: true)
         hideBallInHandBadge()
         table.apply(poses: trajectory.poses(at: min(time, trajectory.duration)))
-        setCamera(shotPose(for: trajectory, from: Self.firstContactTime(result)), animated: false)
+        setCamera(shotPose(for: trajectory), animated: false)
         refreshAim()
         refreshHUD()
-    }
-
-    /// When the cue ball first meets a ball — or, if it meets none, when
-    /// anything first happens to it.
-    static func firstContactTime(_ result: PoolShotResult) -> Double {
-        result.firstContactTime ?? result.events.first?.time ?? 0
     }
 
     // MARK: The frame
@@ -424,9 +429,11 @@ extension PoolGame {
         return needsFrames
     }
 
+    /// Whether anything is moving. A mouse held still is not: every drag
+    /// event asks for the frames its change needs.
     var needsFrames: Bool {
         !tweens.isEmpty || playback != nil || (phase == .charging && chargeSource == .keyboard) || !rig.isSettled
-            || redrawFrames > 0 || drag != .none
+            || redrawFrames > 0
     }
 
     func requestFrames() {
@@ -457,8 +464,19 @@ extension PoolGame {
 
     // MARK: The end of a shot
 
-    /// Plays a rolling shot out at once — the game is quitting.
-    func finishPlaybackNow() {
+    /// Takes a shot already struck into the game at once — the game is
+    /// quitting, or a new one is starting: a stroke still going through is
+    /// worked out here and then, and balls still rolling are played out. A
+    /// win the rules have already decided must never be thrown away.
+    func settleShotInFlight() {
+        if playback == nil, phase == .striking, let stroke = strokeInFlight {
+            let result = pendingResult
+                ?? PoolPhysics.simulate(stroke.shot, from: stroke.table, geometry: geometry, record: true)
+            pendingResult = nil
+            strokeInFlight = nil
+            let outcome = PoolRules.evaluate(result, before: match.table, state: match.rules, geometry: geometry)
+            playback = Playback(result: result, outcome: outcome, time: 0, duration: result.trajectory?.duration ?? 0)
+        }
         guard playback != nil else { return }
         finishShot()
     }
@@ -541,7 +559,9 @@ extension PoolGame {
         guard let over = summary.gameOver else { return }
         let win = over.winner == PoolSeat.you
         let reason = PoolEngineText.gameOver(over.reason, winnerIsYou: win, opponent: match.opponentName)
-        Banner.show(
+        resultShowing = true
+        let gen = generation
+        let banner = Banner.show(
             in: root,
             title: win ? NSLocalizedString("You win", comment: "pool result")
                 : String(format: NSLocalizedString("%@ wins", comment: "pool result: the computer won"), match.opponentName),
@@ -558,6 +578,14 @@ extension PoolGame {
                 },
             ],
             scheduler: scheduler, verticalPosition: 0.40)
+        // Once it has gone (its buttons run after this), the same choices
+        // wait in the action bar.
+        banner.onDismiss = { [weak self] in
+            guard let self, gen == self.generation else { return }
+            self.resultShowing = false
+            self.refreshHUD()
+        }
+        refreshHUD()
     }
 
     // MARK: The cue ball
