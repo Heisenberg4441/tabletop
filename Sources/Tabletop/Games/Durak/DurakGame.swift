@@ -273,7 +273,9 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
     private func matchChanged() {
         guard isViewLoaded, let match else { return }
         let state = match.state
-        table.activeSeat = state.flatMap { $0.isOver ? nil : $0.actor }
+        // The ring moves on when the table has caught up, not while the last
+        // move is still being shown.
+        table.activeSeat = match.isPresenting ? nil : state.flatMap { $0.isOver ? nil : $0.actor }
         table.thinkingSeat = match.thinkingSeat
         let awaiting = match.isAwaitingHuman
         let key = awaiting ? state.map { [gameSerial, $0.actionCount] } : nil
@@ -582,6 +584,18 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
 
     func prepareForScreenshot(scenario: String?) {
         loadViewIfNeeded()
+        if scenario == "options" {
+            // The first launch: the deck on the cloth, the New Game card.
+            optionsCard?.dismiss(animated: false)
+            match.clear()
+            session = nil
+            table.configure(names: DurakTableView.placeholderNames(settings.playerCount))
+            table.show(DurakTableSnapshot(emptyTable: settings.playerCount))
+            refreshPills()
+            presentOptions(cancellable: false, animated: false)
+            view.layoutSubtreeIfNeeded()
+            return
+        }
         guard let scenario = DurakScenario.make(scenario ?? "attack") else { return }
         var session = DurakSession(names: Array(scenario.names.dropFirst()))
         session.scoreboard = scenario.scoreboard
@@ -589,6 +603,7 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
         session.pileSeed = scenario.state.seed
         install(scenario.state, session: session)
         if let reveal = scenario.reveal { table.holdReveal(reveal.seat, reveal.card) }
+        if let card = scenario.select { table.click(card.durakIndex) }
         if let toast = scenario.toast {
             table.toast(toast.text, symbol: toast.symbol,
                         tint: scenario.reveal != nil ? Palette.accent : Palette.textSecondary)

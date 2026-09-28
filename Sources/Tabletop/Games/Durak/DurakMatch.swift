@@ -195,7 +195,10 @@ final class DurakMatch {
         pauseOver = false
         onChange?()
 
-        scheduler.after(DurakBot.thinkingDelay(in: state, seat: seat) * thinkingPace) { [weak self] in
+        // Once the player is out they are only watching the others finish:
+        // the bots keep a human rhythm, but a brisker one.
+        let watching = state.isOut(Self.human) ? 0.5 : 1
+        scheduler.after(DurakBot.thinkingDelay(in: state, seat: seat) * thinkingPace * watching) { [weak self] in
             guard let self, self.generation == token else { return }
             self.pauseOver = true
             self.makePendingMove()

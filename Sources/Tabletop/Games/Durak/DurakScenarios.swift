@@ -21,8 +21,13 @@ struct DurakScenario {
     var toast: (text: String, symbol: String)?
     /// The opening's lowest trump, held up.
     var reveal: (seat: Int, card: Card)?
+    /// A card of the player's picked up by a click, its targets lit.
+    var select: Card?
 
-    static let names = ["attack", "defend", "take", "endgame", "gameover", "transfer", "opening"]
+    /// The five the spec asks for, then three more moments worth checking:
+    /// the transfer place, a click that needs a target, the opening's
+    /// lowest trump — and the New Game card over an empty table.
+    static let names = ["attack", "defend", "take", "endgame", "gameover", "transfer", "choose", "opening", "options"]
 
     /// The scenario called `name`, or nil if no seed within reach produced it.
     static func make(_ name: String) -> DurakScenario? {
@@ -62,16 +67,17 @@ struct DurakScenario {
                     && s.table.count >= 2 && s.playableCards(for: 0).count >= 1
             }.map { scenario(from: $0, toast: nil) }
         case "gameover":
-            // Somebody else is the durak; you went out.
-            guard let over = search(players: 3, variant: .podkidnoy, seeds: 1...400, predicate: { s in
+            // Four players; somebody at the side is the durak, their hand
+            // turned up; you went out first.
+            guard let over = search(players: 4, variant: .podkidnoy, seeds: 1...400, predicate: { s in
                 guard case .durak(let loser)? = s.result else { return false }
-                return loser != 0 && s.hands[loser].count >= 3 && s.outOrder.first == 0
+                return loser % 2 == 1 && s.hands[loser].count >= 3 && s.outOrder.first == 0
             }) else { return nil }
             var result = scenario(from: over, toast: nil)
             // A session a few games old, this one included.
             if case .durak(let loser)? = over.result {
                 result.scoreboard.games = 5
-                result.scoreboard.durakCounts = [1, 1, 1]
+                result.scoreboard.durakCounts = [1, 1, 1, 0]
                 result.scoreboard.durakCounts[loser] += 1
                 result.scoreboard.draws = 1
             }
@@ -83,6 +89,21 @@ struct DurakScenario {
                     && s.legalActions(for: 0).contains { if case .transfer = $0 { return true } else { return false } }
                     && s.stockCount >= 4 && s.table.count >= 1
             }.map { scenario(from: $0, toast: nil) }
+        case "choose":
+            // Perevodnoy, after a transfer: two cards to beat, and a card in
+            // your hand that could beat either — picked up, waiting for you
+            // to say which.
+            guard let state = search(players: 3, variant: .perevodnoy, seeds: 1...600, predicate: { s in
+                guard s.actor == 0, s.phase == .defend, s.defender == 0, s.unbeatenAttacks.count >= 2,
+                      s.stockCount >= 3 else { return false }
+                return s.hands[0].contains { card in s.attacks(beatableBy: card).count >= 2 }
+            }) else { return nil }
+            var result = scenario(from: state, toast: nil)
+            let candidates = state.hands[0].filter { state.attacks(beatableBy: $0).count >= 2 }
+            // The cheapest such card: a person would pick that one up.
+            result.select = candidates.min { ($0.suit == state.trump ? 9 : 0) + $0.durakRankIndex
+                < ($1.suit == state.trump ? 9 : 0) + $1.durakRankIndex }
+            return result
         case "opening":
             // The first deal: a computer player shows the lowest trump.
             for seed in UInt64(1)...200 {
@@ -129,6 +150,6 @@ struct DurakScenario {
         board.durakCounts[1 % state.playerCount] = 1
         board.durakCounts[state.playerCount - 1] += 1
         return DurakScenario(state: state, names: namesFor(state), scoreboard: board,
-                             toast: toast.map { (text: $0.0, symbol: $0.1) }, reveal: nil)
+                             toast: toast.map { (text: $0.0, symbol: $0.1) }, reveal: nil, select: nil)
     }
 }

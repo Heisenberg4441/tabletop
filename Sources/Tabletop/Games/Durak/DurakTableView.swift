@@ -104,6 +104,10 @@ final class DurakTableView: CardTableView {
     private var seats: [SeatView] = []
     private var deckBadge: TableBadge?
     private let transferZone = CAShapeLayer()
+    /// While an attacking card is dragged: the place it will land in.
+    private let nextPlace = CAShapeLayer()
+    /// Where the pointer is during a drag, for lighting what it is over.
+    private var dragPoint: CGPoint?
     private var transferBadge: TableBadge?
     private var speech: [Int: TableBadge] = [:]
     /// The lowest trump being shown at the opening.
@@ -131,12 +135,14 @@ final class DurakTableView: CardTableView {
         actionBar.isHidden = true
         bottomReserve = ActionBar.reservedHeight(contentHeight: ControlHeight.regular)
 
-        transferZone.fillColor = NSColor(white: 1, alpha: 0.05).cgColor
-        transferZone.strokeColor = NSColor(white: 1, alpha: 0.42).cgColor
-        transferZone.lineWidth = 1.5
-        transferZone.lineDashPattern = [6, 5]
-        transferZone.isHidden = true
-        addTableLayer(transferZone, z: -5)
+        for place in [transferZone, nextPlace] {
+            place.fillColor = NSColor(white: 1, alpha: 0.05).cgColor
+            place.strokeColor = NSColor(white: 1, alpha: 0.42).cgColor
+            place.lineWidth = 1.5
+            place.lineDashPattern = [6, 5]
+            place.isHidden = true
+            addTableLayer(place, z: -5)
+        }
 
         configure(names: Self.placeholderNames(playerCount))
         setAccessibilityLabel(NSLocalizedString("Durak table", comment: "accessibility: the durak table"))
@@ -252,9 +258,9 @@ final class DurakTableView: CardTableView {
         return result
     }
 
-    /// Sends every card whose place changed to its new one. `delay` staggers
-    /// a card's departure (a deal, a sweep); `durationFor` gives some cards a
-    /// different pace.
+    /// Sends every card whose place changed to its new one, taking
+    /// `duration`; `delay` staggers each card's departure (a deal, a sweep).
+    /// Cards already where they belong are left alone.
     private func sync(duration: CFTimeInterval, delay: (Card) -> CFTimeInterval = { _ in 0 }) {
         let layout = layoutModel
         let animate = Motion.isEnabled && duration > 0
@@ -290,36 +296,36 @@ final class DurakTableView: CardTableView {
                 deckBadge.move(to: layout.deckCountPoint, anchor: .below)
             } else {
                 deckBadge = TableBadge.show(text, in: self, at: layout.deckCountPoint, anchor: .below, animated: false)
-                deckBadge?.setAccessibilityLabel(Plural.format(
-                    left, one: NSLocalizedString("%d card left in the deck", comment: "durak accessibility"),
-                    other: NSLocalizedString("%d cards left in the deck", comment: "durak accessibility")))
             }
+            deckBadge?.setAccessibilityLabel(Plural.format(
+                left, one: NSLocalizedString("%d card left in the deck", comment: "durak accessibility"),
+                other: NSLocalizedString("%d cards left in the deck", comment: "durak accessibility")))
         } else {
             deckBadge?.hide(animated: Motion.isEnabled && window != nil)
             deckBadge = nil
         }
-        // The transfer place, when the player may transfer.
+        // The transfer place, when the player may transfer; lit gold while a
+        // card that can transfer is dragged over it.
         let showZone = prompt?.canTransfer == true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        transferZone.isHidden = !showZone
+        let zoneRect = layout.transferZone(count: snapshot.table.count)
+        let zoneHot = dragCard.map { card in
+            prompt?.actions(for: card).contains(.transfer(card)) == true
+                && dragPoint.map { zoneRect.insetBy(dx: -cardSize.width * 0.25, dy: -12).contains($0) } == true
+        } ?? false
+        style(transferZone, rect: zoneRect, visible: showZone, hot: zoneHot)
+        // The next place in the row, while an attacking card is dragged.
+        let attacking = dragCard.map { prompt?.actions(for: $0).contains(.attack($0)) == true } ?? false
+        style(nextPlace, rect: layout.emptyPlace(count: snapshot.table.count), visible: attacking,
+              hot: attacking && dragPoint.map { layout.fightRect.contains($0) } == true)
         if showZone {
-            let rect = layout.transferZone(count: snapshot.table.count)
-            transferZone.frame = rect
-            transferZone.path = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size),
-                                       cornerWidth: cornerRadius + 3, cornerHeight: cornerRadius + 3, transform: nil)
-            let hot = dragCard.map { card in prompt?.actions(for: card).contains(.transfer(card)) == true } ?? false
-            transferZone.strokeColor = (hot ? Palette.accent : NSColor(white: 1, alpha: 0.42)).cgColor
-            transferZone.fillColor = (hot ? Palette.accent.withAlphaComponent(0.10) : NSColor(white: 1, alpha: 0.05)).cgColor
-        }
-        CATransaction.commit()
-        if showZone {
-            let point = CGPoint(x: transferZone.frame.midX, y: transferZone.frame.midY)
+            // The word under the place, not in it: the place stays the shape
+            // of the card that goes there.
+            let point = CGPoint(x: zoneRect.midX, y: zoneRect.maxY + 2)
             if let transferBadge {
-                transferBadge.move(to: point, anchor: .center)
+                transferBadge.move(to: point, anchor: .below)
             } else {
                 transferBadge = TableBadge.show(NSLocalizedString("Transfer", comment: "durak: the place a transfer card goes («Перевести»)"),
-                                                symbolName: "arrow.turn.up.right", in: self, at: point, anchor: .center,
+                                                symbolName: "arrow.turn.up.right", in: self, at: point, anchor: .below,
                                                 animated: Motion.isEnabled && window != nil)
             }
         } else if let transferBadge {
@@ -330,6 +336,21 @@ final class DurakTableView: CardTableView {
             let spot = layout.speechPoint(seat)
             badge.move(to: spot.point, anchor: spot.anchor)
         }
+    }
+
+    /// A dashed place on the cloth: quiet, or gold while something is over it.
+    private func style(_ place: CAShapeLayer, rect: CGRect, visible: Bool, hot: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        place.isHidden = !visible
+        if visible {
+            place.frame = rect
+            place.path = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size),
+                                cornerWidth: cornerRadius + 3, cornerHeight: cornerRadius + 3, transform: nil)
+            place.strokeColor = (hot ? Palette.accent : NSColor(white: 1, alpha: 0.42)).cgColor
+            place.fillColor = (hot ? Palette.accent.withAlphaComponent(0.10) : NSColor(white: 1, alpha: 0.05)).cgColor
+        }
+        CATransaction.commit()
     }
 
     // MARK: Seats
@@ -355,7 +376,9 @@ final class DurakTableView: CardTableView {
                     word = NSLocalizedString("Attacking", comment: "durak seat status")
                 }
             }
-            if snapshot.isOut(seat) {
+            if !snapshot.trumpTurned {
+                view.detail = ""        // nothing dealt yet
+            } else if snapshot.isOut(seat) {
                 view.detail = NSLocalizedString("Out", comment: "durak seat: no cards left, safe")
             } else if let word {
                 view.detail = String(format: NSLocalizedString("%@ · %@", comment: "durak seat: card count · status"),
@@ -488,9 +511,15 @@ final class DurakTableView: CardTableView {
         return [id]
     }
 
+    override func spritesDragged(_ ids: [Int], to point: CGPoint) {
+        dragPoint = point
+        placeChrome(layoutModel)
+    }
+
     override func spritesDropped(_ ids: [Int], at point: CGPoint) -> Bool {
         let card = dragCard
         dragCard = nil
+        dragPoint = nil
         dragTargets = []
         refreshHighlights()
         placeChrome(layoutModel)
@@ -530,6 +559,29 @@ final class DurakTableView: CardTableView {
         // Anywhere else between the hands: only if there is nothing to choose.
         if options.count == 1, layout.fightRect.contains(point) { return options[0] }
         return nil
+    }
+
+    /// The kit tells a table when a drag ends in a drop, but not when
+    /// Escape cancels it; so a drag's lights are put out here too — on the
+    /// Escape itself, and at the next press as a backstop.
+    private func endDragLights() {
+        guard dragCard != nil else { return }
+        dragCard = nil
+        dragPoint = nil
+        dragTargets = []
+        refreshHighlights()
+        placeChrome(layoutModel)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        endDragLights()
+        super.mouseDown(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let cancelsDrag = event.keyCode == 53 && dragCard != nil
+        super.keyDown(with: event)
+        if cancelsDrag { endDragLights() }
     }
 
     // MARK: Keys
@@ -644,6 +696,8 @@ final class DurakTableView: CardTableView {
         finalState = nil
         if let stepToken { scheduler.cancel(stepToken) }
         stepToken = nil
+        if let dealToken { scheduler.cancel(dealToken) }
+        dealToken = nil
         reveal = nil
         dragTargets = []
     }
@@ -816,37 +870,51 @@ final class DurakTableView: CardTableView {
     /// slid under the deck.
     private func deal(_ hands: [[Card]], trump: Card, motion: Bool) -> TimeInterval {
         let stockAfter = finalState?.stock ?? []
-        let before = DurakTableSnapshot(beforeDealing: hands, trump: trump, stockAfter: stockAfter.isEmpty ? [trump] : stockAfter)
-        snapshot = before
+        snapshot = DurakTableSnapshot(beforeDealing: hands, trump: trump,
+                                      stockAfter: stockAfter.isEmpty ? [trump] : stockAfter)
         reveal = nil
-        // Cards left on the table from the last game are gathered first.
+        // Cards left on the table from the last game are gathered first —
+        // and the deal waits for them to land, since a card sent off again
+        // mid-flight would skip the gathering altogether.
         let gathering = motion && targets(layoutModel).contains { id, target in
             guard let sprite = existingSprite(id), !sprite.isHidden else { return false }
             return pose(of: id) != target.pose
         }
         sync(duration: gathering ? 0.38 : 0)
-        let start: TimeInterval = gathering ? 0.5 : 0.1
+        updateSeats()
         Sound.play(.shuffle)
 
-        snapshot.apply(.dealt(hands: hands, trump: trump))
-        let n = hands.count
         var order: [Card: Int] = [:]
         let longest = hands.map(\.count).max() ?? 0
         var k = 0
         for i in 0..<longest {
-            for seat in 0..<n where i < hands[seat].count {
+            for seat in hands.indices where i < hands[seat].count {
                 order[hands[seat][i]] = k
                 k += 1
             }
         }
-        let trumpDelay = start + Double(k) * Motion.dealStagger + 0.15
-        sync(duration: Motion.cardMove) { card in
-            if card == trump { return trumpDelay }
-            return order[card].map { start + Double($0) * Motion.dealStagger } ?? 0
+        let trumpDelay = 0.1 + Double(k) * Motion.dealStagger + 0.15
+        let dealNow = { [weak self] in
+            guard let self else { return }
+            self.dealToken = nil
+            self.snapshot.apply(.dealt(hands: hands, trump: trump))
+            self.sync(duration: Motion.cardMove) { card in
+                if card == trump { return trumpDelay }
+                return order[card].map { 0.1 + Double($0) * Motion.dealStagger } ?? 0
+            }
+            self.updateSeats()
         }
-        updateSeats()
-        return motion ? trumpDelay + 0.5 : 0
+        let wait: TimeInterval = gathering ? 0.45 : 0
+        if wait > 0 {
+            dealToken = scheduler.after(wait, dealNow)
+        } else {
+            dealNow()
+        }
+        return motion ? wait + trumpDelay + 0.5 : 0
     }
+
+    /// The deal's second half, waiting for the gathering to land.
+    private var dealToken: TableScheduler.Token?
 
     // MARK: Testing
 

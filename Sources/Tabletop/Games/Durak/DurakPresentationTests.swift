@@ -25,7 +25,8 @@ enum DurakPresentationTests {
         defer { TabletopEnvironment.animationsOverride = savedOverride }
 
         let sections: [(String, (TestReporter) -> Void)] = [
-            ("mirror", snapshotMirror), ("layout", layout), ("games", controllerGames), ("interaction", interaction),
+            ("mirror", snapshotMirror), ("layout", layout), ("games", controllerGames), ("animated", animatedGames),
+            ("interaction", interaction),
             ("lifecycle", lifecycle), ("persistence", persistence), ("scenarios", scenarios),
         ]
         var timings: [String] = []
@@ -352,6 +353,56 @@ enum DurakPresentationTests {
         game.prepareToQuit()
     }
 
+    /// Two games with every animation attached — the gathering, the
+    /// staggered deal, the sweeps, the durak's hand turning up — driven the
+    /// same way. The scheduler does not wait for the flights (nothing in the
+    /// game does), so this proves the animated paths reach the same table.
+    private static func animatedGames(_ t: TestReporter) {
+        t.section("Durak table: the same, with every animation running")
+        let saved = TabletopEnvironment.animationsOverride
+        TabletopEnvironment.animationsOverride = true
+        defer { TabletopEnvironment.animationsOverride = saved }
+        clearFiles()
+        let game = DurakGame()
+        var seed: UInt64 = 500
+        game.nextSeed = { seed += 1; return seed }
+        let window = host(game)
+        defer { withExtendedLifetime(window) {} }
+        game.match.decidesInline = true
+        game.gameDidBecomeActive()
+        var settings = DurakSettings()
+        settings.opponents = 2
+        settings.variant = .perevodnoy
+        game.startNewGame(with: settings)
+        let chooser = DurakBot(.normal)
+        var finished = 0, misses = 0, disagreements = 0
+        for round in 0..<2 {
+            if round > 0 { game.startNewGame() }
+            var steps = 0
+            while let state = game.match.state, !state.isOver, steps < 4_000 {
+                steps += 1
+                game.table.scheduler.runPendingImmediately()
+                guard let now = game.match.state, !now.isOver else { break }
+                if !game.match.isPresenting && !game.table.spritesAgree(with: now) { disagreements += 1 }
+                if game.match.isAwaitingHuman {
+                    let action = chooser.decide(in: now, seat: 0)
+                    if !playLikeAPerson(action, game: game) {
+                        misses += 1
+                        game.match.play(action)
+                    }
+                } else if game.table.scheduler.pendingCount == 0 {
+                    break
+                }
+            }
+            game.table.scheduler.runPendingImmediately()
+            if let state = game.match.state, state.isOver, game.table.spritesAgree(with: state) { finished += 1 }
+        }
+        t.check("both games reach their end with every card in place (\(finished) of 2, \(disagreements) differences, \(misses) missed clicks)",
+                finished == 2 && disagreements == 0 && misses == 0)
+        game.gameWillResignActive()
+        game.prepareToQuit()
+    }
+
     // MARK: Clicks, drops and keys
 
     /// Perevodnoy, three players: seat 1 leads the 7♠ at seat 2, who passes
@@ -591,7 +642,7 @@ enum DurakPresentationTests {
     private static func scenarios(_ t: TestReporter) {
         t.section("Durak table: every screenshot scenario finds its moment")
         var missing: [String] = []
-        for name in DurakScenario.names where DurakScenario.make(name) == nil { missing.append(name) }
+        for name in DurakScenario.names where name != "options" && DurakScenario.make(name) == nil { missing.append(name) }
         t.check("\(DurakScenario.names.count) scenarios \(missing)", missing.isEmpty)
     }
 }

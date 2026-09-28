@@ -142,8 +142,11 @@ struct DurakLayout {
     private func botHand(_ place: DurakPlace, count: Int, seat: Int, shown: Bool, clearOfPlate: Bool) -> [CardPose] {
         guard count > 0 else { return [] }
         let baseZ = 600 + seat * 60
-        let style = shown ? FanStyle(spacing: 0.40, maximumSpread: 0.60, radius: 3.2) : .compact
-        var poses = TableLayout.fan(count: count, anchor: .zero, cardSize: cardSize, side: place.handSide,
+        // Turned up, the hand is held upright whichever edge it is at, so
+        // everyone reads it the right way up, left to right.
+        let style = shown ? FanStyle(spacing: 0.40, maximumSpread: 0.50, radius: 3.4) : .compact
+        var poses = TableLayout.fan(count: count, anchor: .zero, cardSize: cardSize,
+                                    side: shown ? .bottom : place.handSide,
                                     style: style, maxWidth: shown ? handMaxWidth * 0.8 : nil,
                                     scale: shown ? Self.shownScale : Self.botScale, baseZ: baseZ)
         let box = TableLayout.bounds(of: poses, cardSize: cardSize)
@@ -347,19 +350,20 @@ struct DurakLayout {
         return rowOfSix + 2 * sideReserve <= felt.width ? 6 : 3
     }
 
-    /// The middle of pair `i` of `count` on the table (and of the empty place
-    /// after the last, for `i == count`). A single row stays centred as it
-    /// grows; two rows keep three fixed columns, so nothing shifts under the
-    /// player's pointer.
+    /// The middle of pair `i` of `count` on the table — or, for `i ==
+    /// count`, of the empty place after the last (the transfer place). Each
+    /// row is centred on the cards it holds and grows to the right, so the
+    /// empty place is always just past the last card; a second row, on a
+    /// narrow table, opens below once a fourth card arrives.
     func slotCenter(_ i: Int, of count: Int) -> CGPoint {
         let c = battleCenter
-        if perRow >= 6 {
-            let x = c.x + (CGFloat(i) - CGFloat(max(count, 1) - 1) / 2) * pitchX
-            return CGPoint(x: x.rounded(), y: c.y)
-        }
-        let row = i / 3, column = i % 3
-        return CGPoint(x: (c.x + CGFloat(column - 1) * pitchX).rounded(),
-                       y: (c.y + (CGFloat(row) - 0.5) * pitchY).rounded())
+        let perRow = self.perRow
+        let row = i / perRow, column = i % perRow
+        let inRow = max(1, min(perRow, count - row * perRow))
+        let rows = max(1, (count + perRow - 1) / perRow)
+        let x = c.x + (CGFloat(column) - CGFloat(inRow - 1) / 2) * pitchX
+        let y = c.y + (CGFloat(row) - CGFloat(rows - 1) / 2) * pitchY
+        return CGPoint(x: x.rounded(), y: y.rounded())
     }
 
     /// The attacking card of pair `i`, and the card that beats it: lying over
@@ -375,9 +379,13 @@ struct DurakLayout {
         return (a, d)
     }
 
-    /// The transfer zone (perevodnoy): the empty place after the last
-    /// attacking card, where a card of the same rank passes the attack on.
-    func transferZone(count: Int) -> CGRect {
+    /// The transfer place (perevodnoy): where a card of the attack's rank,
+    /// put down after the others, passes the attack on.
+    func transferZone(count: Int) -> CGRect { emptyPlace(count: count) }
+
+    /// The empty place after the last of `count` attacking cards, a card's
+    /// size and a little over: where the next attacking card will lie.
+    func emptyPlace(count: Int) -> CGRect {
         let c = slotCenter(count, of: count)
         let x = c.x - tw * 0.10, y = c.y - th * 0.06
         return CGRect(x: x - tw / 2, y: y - th / 2, width: tw, height: th).insetBy(dx: -4, dy: -4).integral
