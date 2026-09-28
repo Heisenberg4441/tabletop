@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# build.sh — builds Solitaire.app with nothing but the Command Line Tools.
+# build.sh — builds Tabletop.app with nothing but the Command Line Tools.
 #
 # There is no Xcode here and no xcodebuild, so the bundle is assembled by hand:
 # SwiftPM produces the executable, this script wraps it in the directory
@@ -14,8 +14,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="Solitaire"
-BUNDLE_ID="com.solitaire.klondike"
+APP_NAME="Tabletop"
+BUNDLE_ID="com.tabletop.games"
 VERSION="1.0"
 BUILD="1"
 CONFIG="release"
@@ -34,21 +34,43 @@ CONTENTS="${APP}/Contents"
 BINARY=".build/${CONFIG}/${APP_NAME}"
 
 echo "==> Compiling (${CONFIG})"
+# The previous build's executable goes first, so a compile that fails can
+# never leave a stale binary behind for the checks below to test and package.
+rm -f "$BINARY"
+BUILD_LOG="$(mktemp)"
+trap 'rm -f "$BUILD_LOG"' EXIT
+set +e
 if [ "$CONFIG" = "release" ]; then
   # Whole-module optimisation is on by default in release; dead-stripping the
   # link keeps the binary small without touching the source.
-  swift build -c release -Xlinker -dead_strip 2>&1 | grep -vE "search path|^\[" || true
+  swift build -c release -Xlinker -dead_strip >"$BUILD_LOG" 2>&1
 else
-  swift build 2>&1 | grep -vE "search path|^\[" || true
+  swift build >"$BUILD_LOG" 2>&1
+fi
+BUILD_STATUS=$?
+set -e
+# The compiler's own progress lines are noise; errors and warnings are not.
+grep -vE "search path|^\[" "$BUILD_LOG" || true
+if [ "$BUILD_STATUS" -ne 0 ]; then
+  echo "build FAILED (swift build exited ${BUILD_STATUS})" >&2
+  exit "$BUILD_STATUS"
 fi
 [ -x "$BINARY" ] || { echo "build produced no executable" >&2; exit 1; }
 
-echo "==> Running self-tests"
+# Every harness mode runs against a throwaway storage directory, so none of
+# these can touch the player's saved games. Each one exits non-zero on a
+# failure, and `set -e` with pipefail turns that into a failed build.
+echo "==> Running self-tests (kit and every game)"
 "$BINARY" --selftest | tail -3
-echo "==> Playing test games through the board"
+echo "==> Playing solitaire games through the real board"
 "$BINARY" --playtest 40 | tail -2
 echo "==> Checking every button and menu item is wired to something"
 "$BINARY" --controls | tail -2
+echo "==> Rendering the library and the kit gallery off-screen"
+SHOT_DIR="$(mktemp -d)"
+"$BINARY" --shot library "${SHOT_DIR}/library.png" >/dev/null
+"$BINARY" --shot kit "${SHOT_DIR}/kit.png" >/dev/null
+rm -rf "$SHOT_DIR"
 
 echo "==> Assembling ${APP}"
 rm -rf "$APP"
@@ -84,12 +106,12 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>${VERSION}</string>
 	<key>CFBundleVersion</key><string>${BUILD}</string>
-	<key>LSApplicationCategoryType</key><string>public.app-category.card-games</string>
+	<key>LSApplicationCategoryType</key><string>public.app-category.board-games</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
-	<key>NSHumanReadableCopyright</key><string>Klondike solitaire.</string>
+	<key>NSHumanReadableCopyright</key><string>Tabletop — classic table games.</string>
 </dict>
 </plist>
 PLIST

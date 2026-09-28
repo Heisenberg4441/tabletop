@@ -1,1 +1,4 @@
 .build
+# Produced by build.sh on every run; the icon PNG stays tracked.
+build/*.app
+build/*.iconset
