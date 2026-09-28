@@ -558,6 +558,30 @@ enum DurakEngineTests {
             let broken = (try? JSONSerialization.data(withJSONObject: corrupt)) ?? Data()
             t.check("a save whose cards do not add up is refused",
                     (try? JSONDecoder().decode(DurakState.self, from: broken)) == nil)
+            // Damage that used to trap on the way in, or as soon as a bot
+            // thought for the seat named: each must be refused, quietly.
+            func refused(_ change: (inout [String: Any]) -> Void) -> Bool {
+                var copy = object
+                change(&copy)
+                guard let data = try? JSONSerialization.data(withJSONObject: copy) else { return false }
+                return (try? JSONDecoder().decode(DurakState.self, from: data)) == nil
+            }
+            t.check("a save with an impossible number of players is refused",
+                    refused { $0["rules"] = ["playerCount": -1, "variant": "perevodnoy"] }
+                        && refused { $0["rules"] = ["playerCount": 9, "variant": "perevodnoy"] })
+            t.check("a save asking a seat that is not at the table is refused",
+                    refused { $0["actor"] = 7 } && refused { $0["actor"] = -2 })
+            t.check("a save holding something that is not a card is refused",
+                    refused { o in
+                        if var hands = o["hands"] as? [[Any]], !hands.isEmpty, !hands[0].isEmpty {
+                            hands[0][0] = ["code": 200]
+                            o["hands"] = hands
+                        }
+                    } && refused { $0["trumpCard"] = ["code": 77] })
+            t.check("and one whose bookkeeping cannot be read back is refused",
+                    refused { $0["passedRanks"] = [99999, -1, -1] } && refused { $0["actionCount"] = -5 }
+                        && refused { $0["outOrder"] = [5] } && refused { $0["result"] = ["durak": ["_0": 6]] }
+                        && refused { $0["hands"] = [] })
         } else {
             t.check("the save is a JSON object", false)
         }
@@ -983,6 +1007,76 @@ enum DurakEngineTests {
             t.check("offered a cheap transfer, Normal passes the six on rather than spend a trump",
                     normal == .transfer(card("6d")))
         }
+        // The courtyard's endings: two players, deck gone, and one lead wins
+        // where the natural cheap one loses — the defender beats it with
+        // their last card and is out. Normal counts these; so does Hard.
+        let endings: [(mine: String, theirs: String, trump: String, win: [String])] = [
+            ("Kd Qc Ac", "10c", "6c", ["Qc"]),
+            ("As 10c Qc Kc Ac", "Jc", "6c", ["Qc"]),
+            ("8h Kh Qs Ks", "9s 10s", "6s", ["Kh", "Qs", "Ks"]),
+        ]
+        var endingsWon = 0, endingsChecked = 0
+        for ending in endings {
+            guard let state = DurakState.position(rules: DurakRules(playerCount: 2), trumpCard: card(ending.trump),
+                                                  hands: [cards(ending.mine), cards(ending.theirs)], attacker: 0)
+            else { continue }
+            var solver = DurakEndgameSolver(trump: state.trump, transfers: false)
+            let wins = Set((solver.evaluateMoves(in: state, for: 0) ?? []).filter { $0.value == 1 }.map(\.action))
+            let expected = Set(ending.win.map { DurakAction.attack(card($0)) })
+            for difficulty in [DurakDifficulty.normal, .hard] {
+                endingsChecked += 1
+                if wins == expected && expected.contains(DurakBot(difficulty).decide(in: state, seat: 0)) { endingsWon += 1 }
+            }
+        }
+        t.check("Normal and Hard win the classic endings: lead what the last card cannot beat (\(endingsWon) of \(endingsChecked))",
+                endingsWon == endingsChecked && endingsChecked == 6)
+
+        // Twenty takes in a row, two players, the deck still on: no loop is
+        // possible, so the bots go on punishing the taker — a cheap eight is
+        // piled on, not held back as if the table were stuck.
+        if var piling = DurakState.position(rules: DurakRules(playerCount: 2), trumpCard: card("7s"),
+                                            hands: [cards("9c 10c Jc Qd 9h 10h"), cards("8c 6d 8d Js Ks As")],
+                                            stock: cards("7s 6h"), attacker: 1),
+           (try? piling.apply(.attack(card("8c")), by: 1)) != nil, (try? piling.apply(.take, by: 0)) != nil,
+           var object = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(piling))) as? [String: Any] {
+            object["boutsWithoutBito"] = 20
+            if let data = try? JSONSerialization.data(withJSONObject: object),
+               let stuck = try? JSONDecoder().decode(DurakState.self, from: data) {
+                let choices = DurakDifficulty.allCases.filter { $0 != .easy }.map { DurakBot($0).decide(in: stuck, seat: 1) }
+                t.check("after twenty takes with the deck still on, a taker is still piled on (\(choices))",
+                        choices.allSatisfy { $0 == .attack(card("8d")) })
+            } else {
+                t.check("the piling position round-trips", false)
+            }
+        }
+
+        // Normal never throws away a won two-player ending it can count out:
+        // every decision with eight cards or fewer in play, deck gone, keeps
+        // the exact value the position had.
+        var counted = 0, thrownAway = 0
+        let normal = DurakBot(.normal)
+        for game in 0..<max(20, games) {
+            let variant: DurakVariant = game % 3 == 2 ? .perevodnoy : .podkidnoy
+            var (state, _) = DurakState.newGame(rules: DurakRules(playerCount: 2, variant: variant), seed: UInt64(game) &+ 6_100)
+            var steps = 0
+            while !state.isOver, let actor = state.actor, steps < 2_000 {
+                steps += 1
+                let action = normal.decide(in: state, seat: actor)
+                if state.stockCount == 0, let (root, _) = DurakEndgameSolver.position(of: state, for: actor),
+                   (root.hand0 | root.hand1 | root.table).nonzeroBitCount <= 8, state.legalActions(for: actor).count > 1 {
+                    var solver = DurakEndgameSolver(trump: state.trump, transfers: variant == .perevodnoy)
+                    if let values = solver.evaluateMoves(in: state, for: actor), let best = values.map(\.value).max(),
+                       let chosen = values.first(where: { $0.action == action })?.value {
+                        counted += 1
+                        if chosen < best { thrownAway += 1 }
+                    }
+                }
+                guard (try? state.apply(action, by: actor)) != nil else { break }
+            }
+        }
+        t.check("Normal keeps every small two-player ending's value (\(thrownAway) of \(counted) decisions lost some)",
+                thrownAway == 0 && counted > 0)
+
         if var take = DurakState.position(rules: DurakRules(playerCount: 2), trumpCard: card("6h"),
                                           hands: [cards("7c 7d 8s 9s 10s Js"), cards("Qh Ah Kh 6s 6d Jd")],
                                           stock: Array(cards("6h 7h 8h 9h 10h Jh 6c 8c 9c 10c Jc Qc Kc Ac 8d 9d 10d Qd")),

@@ -26,7 +26,7 @@ enum DurakPresentationTests {
 
         let sections: [(String, (TestReporter) -> Void)] = [
             ("mirror", snapshotMirror), ("layout", layout), ("games", controllerGames), ("animated", animatedGames),
-            ("interaction", interaction),
+            ("interaction", interaction), ("keys", keys), ("end", endPanels), ("new game", newGameEdges),
             ("lifecycle", lifecycle), ("persistence", persistence), ("scenarios", scenarios),
         ]
         var timings: [String] = []
@@ -48,6 +48,7 @@ enum DurakPresentationTests {
     static func host(_ game: DurakGame, size: CGSize = CGSize(width: 1200, height: 800)) -> NSWindow {
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless],
                               backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = game.view
         game.view.frame = CGRect(origin: .zero, size: size)
         game.view.layoutSubtreeIfNeeded()
@@ -58,16 +59,29 @@ enum DurakPresentationTests {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 
+    /// Takes a test window's table out before it goes, so nothing is left to
+    /// draw the next time the run loop turns.
+    static func release(_ window: NSWindow) {
+        window.contentView = nil
+    }
+
     static func findButton(_ title: String, in view: NSView) -> CapsuleButton? {
         if let button = view as? CapsuleButton, button.title == title, !button.isHiddenOrHasHiddenAncestor { return button }
         for sub in view.subviews { if let found = findButton(title, in: sub) { return found } }
         return nil
     }
 
-    static func key(_ characters: String, code: UInt16, in window: NSWindow) -> NSEvent? {
-        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+    static func key(_ characters: String, code: UInt16, in window: NSWindow, modifiers: NSEvent.ModifierFlags = [],
+                    repeating: Bool = false) -> NSEvent? {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                          windowNumber: window.windowNumber, context: nil, characters: characters,
-                         charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+                         charactersIgnoringModifiers: characters, isARepeat: repeating, keyCode: code)
+    }
+
+    /// Plays seeded Normal games until one ends with `loser` the durak (nil:
+    /// a draw) at a table of `players`.
+    static func finishedGame(players: Int, loser: Int, seeds: ClosedRange<UInt64> = 1...300) -> DurakState? {
+        DurakScenario.search(players: players, variant: .podkidnoy, seeds: seeds) { $0.result == .durak(loser) }
     }
 
     // MARK: The mirror
@@ -192,6 +206,50 @@ enum DurakPresentationTests {
         }
         t.check("hands, seats, the deck, the fight and the pile stay on the cloth and apart \(problems.prefix(6))",
                 problems.isEmpty)
+
+        // What the toast over your hand must leave alone, and what a big
+        // hand must still show.
+        var crowded: [String] = []
+        for size in sizes {
+            for players in 2...4 {
+                let table = DurakTableView(playerCount: players)
+                table.frame = CGRect(origin: .zero, size: size)
+                table.show(DurakTableSnapshot(state: DurakState.newGame(rules: DurakRules(playerCount: players), seed: 5).state))
+                table.layoutSubtreeIfNeeded()
+                let l = table.layoutModel
+                let label = "\(Int(size.width))×\(Int(size.height)) \(players)p"
+                let toast = CGRect(x: l.felt.midX - 180, y: l.toastTop, width: 360, height: DurakLayout.toastHeight)
+                // Your lowest trump, held up at the opening, clear of the
+                // toast that names it.
+                if TableLayout.boundingBox(of: l.revealPose(0), cardSize: l.cardSize).intersects(toast) {
+                    crowded.append("\(label): the opening's toast lies across your revealed card")
+                }
+                // Six pairs, one row or two, clear of the toast.
+                var fightBottom: CGFloat = 0
+                for i in 0..<6 {
+                    let pair = l.pair(i, of: 6, attack: Card.durakDeck[i], defence: Card.durakDeck[i + 9])
+                    fightBottom = max(fightBottom, TableLayout.boundingBox(of: pair.defence, cardSize: l.cardSize).maxY,
+                                      TableLayout.boundingBox(of: pair.attack, cardSize: l.cardSize).maxY)
+                }
+                if fightBottom > l.toastTop { crowded.append("\(label): the fight runs \(Int(fightBottom - l.toastTop)) pt into the toast") }
+                // Twenty-four cards: neighbours far enough apart for a 10's
+                // corner to read.
+                let fan = l.humanHand(count: 24)
+                let gaps = zip(fan, fan.dropFirst()).map { hypot($1.position.x - $0.position.x, $1.position.y - $0.position.y) }
+                if let tightest = gaps.min(), tightest < l.cardSize.width * 0.19 {
+                    crowded.append("\(label): a 24-card hand only \(Int(tightest)) pt apart")
+                }
+                // The trump lies across under the deck, most of it showing.
+                let deck = TableLayout.boundingBox(of: l.deck(count: 12).last ?? l.trumpPose, cardSize: l.cardSize)
+                let trump = TableLayout.boundingBox(of: l.trumpPose, cardSize: l.cardSize)
+                let shown = (trump.maxX - deck.maxX) / trump.width
+                if !(trump.width > trump.height && trump.minX < deck.maxX && shown > 0.55 && shown < 0.75) {
+                    crowded.append("\(label): the trump is not across under the deck (\(shown))")
+                }
+            }
+        }
+        t.check("the toast leaves the fight and the revealed trump alone, big hands stay readable, the trump lies across \(crowded.prefix(6))",
+                crowded.isEmpty)
         let narrow = DurakTableView(playerCount: 4)
         narrow.frame = CGRect(x: 0, y: 0, width: 960, height: 640)
         narrow.show(DurakTableSnapshot(state: DurakState.newGame(rules: DurakRules(playerCount: 4), seed: 5).state))
@@ -445,11 +503,15 @@ enum DurakPresentationTests {
 
         table.click(card("6s").durakIndex)
         t.check("a click on a card that can do nothing does nothing", game.match.state?.actionCount == state.actionCount)
+        t.check("only the playable cards rise under the pointer",
+                table.hoverableForTesting == [card("9h").durakIndex, card("7c").durakIndex])
         table.click(card("9h").durakIndex)
         t.check("a click on the 9♥, which could beat either seven, picks it up instead of playing it",
                 table.selectedCard == card("9h") && game.match.state?.actionCount == state.actionCount)
+        t.check("then only its targets are lit, each in a gold ring — not the rest of the hand",
+                table.litForTesting == [card("7s").durakIndex, card("7d").durakIndex] && table.ringsShowingForTesting == 2)
         if let esc = key("\u{1b}", code: 53, in: window) { table.keyDown(with: esc) }
-        t.check("Escape puts it back", table.selectedCard == nil)
+        t.check("Escape puts it back, and the rings go", table.selectedCard == nil && table.ringsShowingForTesting == 0)
         table.click(card("9h").durakIndex)
         table.click(card("7d").durakIndex)
         let beaten = game.match.state?.table.first { $0.attack == card("7d") }?.defence
@@ -484,6 +546,11 @@ enum DurakPresentationTests {
         if let t_ = key("t", code: 17, in: window) { table.keyDown(with: t_) }
         t.check("T takes", game.match.state?.phase == .pileOn || (game.match.state?.hands[0].count ?? 0) > state.hands[0].count)
         table.scheduler.runPendingImmediately()
+        game.install(state, session: session)
+        if let ye = key("\u{0435}", code: 17, in: window) { table.keyDown(with: ye) }
+        t.check("and so does the same key on a Russian layout, where it types «е»",
+                game.match.state?.phase == .pileOn || (game.match.state?.hands[0].count ?? 0) > state.hands[0].count)
+        table.scheduler.runPendingImmediately()
 
         if var throwIn = DurakState.position(rules: DurakRules(playerCount: 2), trumpCard: card("Ah"),
                                              hands: [DurakEngineTests.cards("7c 7s 9d Qd Kc"), DurakEngineTests.cards("8c 9c Jd Jc 6h")],
@@ -493,12 +560,194 @@ enum DurakPresentationTests {
             game.install(throwIn, session: DurakSession(names: ["Anna"]))
             t.check("your attack, all beaten: the bar says Bito",
                     table.actionBar.button(for: "pass")?.title == NSLocalizedString("Bito", comment: "durak button: everything is beaten («Бито»)"))
+            if let held = key(" ", code: 49, in: window, repeating: true) { table.keyDown(with: held) }
+            t.check("a Space held down from before, repeating, does not say it", game.match.state == throwIn)
             if let space = key(" ", code: 49, in: window) { table.keyDown(with: space) }
             t.check("Space says it", (game.match.state?.discard.count ?? 0) > throwIn.discard.count
                         || game.match.state?.attacker == 1)
             table.scheduler.runPendingImmediately()
         }
         game.gameWillResignActive()
+    }
+
+    /// Stands where the window would be in the responder chain, and notes
+    /// every key that gets that far — where AppKit would sound the alert.
+    final class KeySentinel: NSResponder {
+        var reached: [String] = []
+        override func keyDown(with event: NSEvent) { reached.append(event.charactersIgnoringModifiers ?? "?") }
+    }
+
+    private static func keys(_ t: TestReporter) {
+        t.section("Durak table: no key falls through to the system's alert sound")
+        clearFiles()
+        let game = DurakGame()
+        let window = host(game)
+        defer { withExtendedLifetime(window) {} }
+        game.gameDidBecomeActive()
+        let sentinel = KeySentinel()
+        game.nextResponder = sentinel
+        let table = game.table!
+        // A bot to move: nothing for the player to do.
+        var state = DurakState.newGame(rules: DurakRules(playerCount: 3), seed: 21).state
+        let bot = DurakBot(.normal)
+        while let actor = state.actor, actor == 0 {
+            _ = try? state.apply(bot.decide(in: state, seat: actor), by: actor)
+        }
+        game.install(state, session: DurakSession(names: ["Anna", "Boris"]))
+        let bare: [(String, UInt16)] = [(" ", 49), ("t", 17), ("\r", 36), ("\u{1b}", 53), ("x", 7), ("\u{0435}", 17)]
+        for (chars, code) in bare {
+            if let event = key(chars, code: code, in: window) { table.keyDown(with: event) }
+            if let event = key(chars, code: code, in: window, repeating: true) { table.keyDown(with: event) }
+        }
+        t.check("while a bot thinks, Space, T, Return, Escape and stray letters stop at the game (\(sentinel.reached))",
+                sentinel.reached.isEmpty && game.match.state == state)
+        if let command = key("t", code: 17, in: window, modifiers: .command) { table.keyDown(with: command) }
+        t.check("while ⌘ keys still go on up the chain", sentinel.reached == ["t"])
+        game.gameWillResignActive()
+        game.nextResponder = nil
+        release(window)
+    }
+
+    // MARK: The end of a game
+
+    private static func endPanels(_ t: TestReporter) {
+        t.section("Durak table: the end banner and the scoreboard stay off the cards and the seats")
+        clearFiles()
+        var problems: [String] = []
+        var boards = 0, placements = 0
+        func check(_ game: DurakGame, _ label: String) {
+            let frames = game.endFramesForTesting
+            guard let banner = frames.banner else { problems.append("\(label): no banner"); return }
+            placements += 1
+            var panels = [("banner", banner)]
+            if let board = frames.board {
+                boards += 1
+                panels.append(("board", board))
+                if board.insetBy(dx: -4, dy: -4).intersects(banner) { problems.append("\(label): the board touches the banner") }
+            }
+            let felt = game.table.layoutModel.felt
+            for (name, frame) in panels {
+                if !felt.contains(frame) { problems.append("\(label): the \(name) leaves the cloth") }
+                for obstacle in game.table.endObstacles where obstacle.intersects(frame) {
+                    problems.append("\(label): the \(name) covers \(obstacle.integral)")
+                    break
+                }
+            }
+        }
+        for players in 2...4 {
+            for loser in 0..<players {
+                guard let over = finishedGame(players: players, loser: loser) else {
+                    problems.append("no \(players)-player game with seat \(loser) the durak")
+                    continue
+                }
+                for size in [CGSize(width: 960, height: 640), CGSize(width: 1200, height: 800), CGSize(width: 1728, height: 1080)] {
+                    let game = DurakGame()
+                    let window = host(game, size: size)
+                    game.install(over, session: DurakSession(names: Array(BotRoster.pick(players - 1, seed: 3))))
+                    game.view.layoutSubtreeIfNeeded()
+                    check(game, "\(Int(size.width))×\(Int(size.height)) \(players)p, seat \(loser) the durak")
+                    release(window)
+                }
+            }
+        }
+        t.check("at 960×640, 1200×800 and 1728×1080, 2–4 players, every seat the durak \(problems.prefix(4))",
+                problems.isEmpty && placements == 27)
+        t.info("the scoreboard found room in \(boards) of \(placements) endings")
+
+        // A resize carries the pair along together.
+        problems = []
+        if let over = finishedGame(players: 4, loser: 0) {
+            let game = DurakGame()
+            let window = host(game, size: CGSize(width: 1728, height: 1080))
+            game.install(over, session: DurakSession(names: ["Anna", "Boris", "Chloé"]))
+            game.view.layoutSubtreeIfNeeded()
+            for size in [CGSize(width: 960, height: 640), CGSize(width: 1728, height: 1080), CGSize(width: 1200, height: 800)] {
+                window.setContentSize(size)
+                game.view.frame = CGRect(origin: .zero, size: size)
+                game.view.layoutSubtreeIfNeeded()
+                check(game, "resized to \(Int(size.width))×\(Int(size.height))")
+                let frames = game.endFramesForTesting
+                if let banner = frames.banner, let board = frames.board, board.minY >= banner.minY,
+                   board.minY - banner.maxY > 40 {
+                    problems.append("resized to \(Int(size.width)): the board drifted \(Int(board.minY - banner.maxY)) pt below the banner")
+                }
+            }
+            release(window)
+        }
+        t.check("resizing a finished game keeps the banner and the board together and clear \(problems.prefix(4))",
+                problems.isEmpty)
+
+        // A finished game restored at launch, opened in a big window.
+        clearFiles()
+        if let over = finishedGame(players: 3, loser: 1) {
+            var session = DurakSession(names: ["Anna", "Boris"])
+            session.state = over
+            session.resultRecorded = true
+            session.save()
+            let restored = DurakGame()
+            let window = host(restored, size: CGSize(width: 1728, height: 1080))
+            restored.view.layoutSubtreeIfNeeded()
+            problems = []
+            check(restored, "restored into 1728×1080")
+            let banner = restored.endFramesForTesting.banner
+            t.check("a finished game restored into a big window lays its end panels out for that window \(problems.prefix(3))",
+                    problems.isEmpty && banner.map { abs($0.midX - restored.table.layoutModel.felt.midX) < 2 } == true)
+            release(window)
+        }
+        clearFiles()
+    }
+
+    // MARK: New Game at awkward moments
+
+    private static func newGameEdges(_ t: TestReporter) {
+        t.section("Durak table: New Game at awkward moments")
+        clearFiles()
+        let game = DurakGame()
+        var seed: UInt64 = 300
+        game.nextSeed = { seed += 1; return seed }
+        let window = host(game)
+        defer { withExtendedLifetime(window) {} }
+        game.match.decidesInline = true
+        game.gameDidBecomeActive()
+
+        // Four at the table, Chloé (seat 3) has just said Pass; New Game with
+        // one opponent before her word has gone.
+        let four = DurakState.newGame(rules: DurakRules(playerCount: 4), seed: 9).state
+        game.install(four, session: DurakSession(names: ["Anna", "Boris", "Chloé"]))
+        game.table.say(NSLocalizedString("Pass", comment: "durak: nothing to throw in («Пас»)"), seat: 3)
+        var settings = DurakSettings()
+        settings.opponents = 1
+        game.startNewGame(with: settings)
+        game.view.layoutSubtreeIfNeeded()
+        game.table.scheduler.runPendingImmediately()
+        game.view.layoutSubtreeIfNeeded()
+        let words = TableBadge.badges(in: game.table).map(\.text)
+        t.check("a word from a seat the new table does not have goes with the old game (no crash; \(words))",
+                game.table.speechSeatsForTesting.isEmpty && !words.contains("Pass") && game.match.state?.playerCount == 2)
+
+        // Two players, the deck gone: Anna leads her last card and you beat
+        // it, left holding cards — and press New Game before the table has
+        // caught up. The game still counts, as the durak it made you.
+        let c: (String) -> [Card] = { DurakEngineTests.cards($0) }
+        guard let ending = DurakState.position(rules: DurakRules(playerCount: 2), trumpCard: DurakEngineTests.card("6h"),
+                                               hands: [c("10c Jc"), c("9c")], attacker: 1) else {
+            t.check("the ending deals", false)
+            return
+        }
+        let before = game.statisticsForTesting.podkidnoy
+        game.install(ending, session: DurakSession(names: ["Anna"]))
+        for _ in 0..<20 where !game.match.isAwaitingHuman { game.table.scheduler.runPendingImmediately() }
+        let beat = game.match.play(.defend(DurakEngineTests.card("10c"), on: DurakEngineTests.card("9c")))
+        let stillShowing = game.match.isPresenting
+        game.startNewGame()
+        let after = game.statisticsForTesting.podkidnoy
+        let session = game.sessionForTesting
+        t.check("New Game while the last move is still being shown counts the finished game (durak \(after.durak - before.durak), games \(session?.scoreboard.games ?? -1))",
+                beat && stillShowing && after.played == before.played + 1 && after.durak == before.durak + 1
+                    && session?.scoreboard.games == 1 && session?.scoreboard.durakCounts.first == 1)
+        t.check("and the new game is dealt «под дурака»: you defend first", game.match.state?.defender == 0)
+        game.gameWillResignActive()
+        release(window)
     }
 
     // MARK: Walking away
@@ -558,6 +807,7 @@ enum DurakPresentationTests {
             waited += 0.05
         }
         t.check("Cancel lets the table carry on", !game.isOptionsCardUp && game.match.state?.actionCount != held)
+
         game.gameWillResignActive()
         pump(0.05)
         let pending = game.table.scheduler.pendingCount

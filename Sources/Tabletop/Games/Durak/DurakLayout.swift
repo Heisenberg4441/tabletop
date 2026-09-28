@@ -106,7 +106,7 @@ struct DurakLayout {
     func humanHand(count: Int, lifted: Set<Int> = []) -> [CardPose] {
         guard count > 0 else { return [] }
         var poses = TableLayout.fan(count: count, anchor: .zero, cardSize: cardSize, side: .bottom,
-                                    style: .open, maxWidth: handMaxWidth, baseZ: 800)
+                                    style: humanFanStyle(count: count), maxWidth: handMaxWidth, baseZ: 800)
         let box = TableLayout.bounds(of: poses, cardSize: cardSize)
         let dx = felt.midX - (box.minX + box.maxX) / 2
         let dy = play.maxY - 4 - box.maxY
@@ -122,6 +122,26 @@ struct DurakLayout {
             poses[i].position.y = poses[i].position.y.rounded()
         }
         return poses
+    }
+
+    /// The player's fan for `count` cards. Up to a dozen or so it is the
+    /// kit's open fan. Past that the open fan's arc is spent before the width
+    /// is — it would squeeze the cards until a ten reads "1" while the cloth
+    /// either side stays empty — so a big hand is spread over the whole
+    /// width it may have, on a flatter arc that dips no deeper than the
+    /// open fan's widest.
+    func humanFanStyle(count: Int) -> FanStyle {
+        let open = FanStyle.open
+        guard count > 1 else { return open }
+        let spacing = min(open.spacing * w, max(1, (handMaxWidth - w) / CGFloat(count - 1)))
+        let arc = spacing * CGFloat(count - 1)
+        let radius = open.radius * h
+        guard arc / radius > open.maximumSpread else { return open }
+        // The dip at the ends of an arc of length L and radius R is about
+        // L² / 8R; hold it at the open fan's own at full spread.
+        let dip = radius * (1 - cos(open.maximumSpread / 2))
+        let flatter = max(radius, arc * arc / (8 * dip))
+        return FanStyle(spacing: spacing / w, maximumSpread: arc / flatter + 0.001, radius: flatter / h)
     }
 
     /// The top of the player's hand (a six-card hand, lifted), which the fight
@@ -204,10 +224,15 @@ struct DurakLayout {
         TableLayout.bounds(of: botHand(place, count: 6, seat: 0, shown: false, clearOfPlate: false), cardSize: cardSize)
     }
 
+    /// Where `seat` sits. A seat the table does not have — a word still
+    /// pinned for a player of the bigger table a moment ago — is given the
+    /// top, rather than trapping: it is about to be taken away.
+    func place(of seat: Int) -> DurakPlace { places[safe: seat] ?? .top }
+
     /// The seat's plate for `seat`.
     func seatFrame(_ seat: Int) -> CGRect {
         let size = Self.seatSize
-        let place = places[seat]
+        let place = place(of: seat)
         let origin: CGPoint
         switch place {
         case .bottom:
@@ -233,7 +258,7 @@ struct DurakLayout {
     /// Where a word from `seat` ("Pass", "Take") is pinned: between the hand
     /// and the middle of the table.
     func speechPoint(_ seat: Int) -> (point: CGPoint, anchor: TableBadge.Anchor) {
-        let place = places[seat]
+        let place = place(of: seat)
         switch place {
         case .bottom:
             let box = TableLayout.bounds(of: humanHand(count: 6), cardSize: cardSize)
@@ -251,9 +276,11 @@ struct DurakLayout {
     }
 
     /// Where the lowest trump is held up for everyone to see at the opening:
-    /// out of the seat's hand, a third of the way to the middle.
+    /// out of the seat's hand, a third of the way to the middle — and yours
+    /// high enough that the toast over your hand, which names the card,
+    /// does not lie across it.
     func revealPose(_ seat: Int) -> CardPose {
-        let place = places[seat]
+        let place = place(of: seat)
         let from: CGPoint
         switch place {
         case .bottom:
@@ -264,31 +291,56 @@ struct DurakLayout {
             from = CGPoint(x: box.midX, y: box.midY)
         }
         let to = battleCenter
-        let p = CGPoint(x: from.x + (to.x - from.x) * 0.42, y: from.y + (to.y - from.y) * 0.42)
+        var p = CGPoint(x: from.x + (to.x - from.x) * 0.42, y: from.y + (to.y - from.y) * 0.42)
+        if place == .bottom { p.y = min(p.y, toastTop - 10 - h / 2) }
         return CardPose(position: CGPoint(x: p.x.rounded(), y: p.y.rounded()), rotation: 0, z: 950)
     }
+
+    // MARK: Words over the hand
+
+    /// The kit's toast is a 34-point capsule.
+    static let toastHeight: CGFloat = 34
+
+    /// A playable card under the pointer rises this much more (the kit
+    /// table's `hoverLift`, in card heights).
+    static let hoverLift: CGFloat = 0.07
+
+    /// The bottom edge of a toast over the player's hand: just above its
+    /// playable cards — clear of one rising under the pointer — where the
+    /// eye already is.
+    var toastBottom: CGFloat { (handTop - Self.hoverLift * h - 4).rounded() }
+    var toastTop: CGFloat { toastBottom - Self.toastHeight }
 
     // MARK: Deck and pile
 
     /// The deck's middle. The trump sticks out to its right.
     var deckCenter: CGPoint {
-        let x = felt.minX + edge + 12 + tw / 2
+        let x = felt.minX + edge + 6 + tw / 2
         if playerCount >= 4 {
             return CGPoint(x: x.rounded(), y: (felt.minY + edge + 8 + th / 2).rounded())
         }
         return CGPoint(x: x.rounded(), y: (battleCenter.y - th * 0.06).rounded())
     }
 
+    /// How far the turned trump's middle lies from the deck's, in table-card
+    /// heights. It lies across under the deck, as it is put down at a real
+    /// table, and two thirds of it shows: the corner with its rank and suit,
+    /// and enough of the face turned sideways that it plainly lies crosswise
+    /// rather than standing beside the deck. (The kit's `trump(underDeckAt:)`
+    /// shows under half, which on a small card reads as a second, upright
+    /// card.) Any further and the far corner's index would peep out from
+    /// under the deck's edge.
+    static let trumpReach: CGFloat = 0.52
+
     var trumpPose: CardPose {
-        var pose = TableLayout.trump(underDeckAt: deckCenter, cardSize: tableCardSize, towardsRight: true, z: 99)
-        pose.scale = Self.tableScale
-        pose.position = CGPoint(x: pose.position.x.rounded(), y: pose.position.y.rounded())
-        return pose
+        CardPose(position: CGPoint(x: (deckCenter.x + th * Self.trumpReach).rounded(), y: deckCenter.y.rounded()),
+                 rotation: .pi / 2, z: 99, scale: Self.tableScale)
     }
 
-    /// Under the deck, for the count of cards left.
-    var deckCountPoint: CGPoint {
-        CGPoint(x: deckCenter.x, y: (deckCenter.y + th / 2 + 12).rounded())
+    /// Under the deck, for the count of cards left — or, once only the trump
+    /// is left, under the trump.
+    func deckCountPoint(trumpOnly: Bool) -> CGPoint {
+        CGPoint(x: trumpOnly ? trumpPose.position.x : deckCenter.x, y: (deckCenter.y + th / 2 + 12).rounded())
     }
 
     /// Cards on the deck, bottom first; the turned trump is `trumpPose`.
@@ -334,14 +386,48 @@ struct DurakLayout {
 
     /// Centre to centre of two neighbouring pairs.
     var pitchX: CGFloat { (tw * 1.52).rounded() }
-    var pitchY: CGFloat { (th * 1.18).rounded() }
+
+    /// From a row's middle up to the top of its attacking cards, and down to
+    /// the bottom of the turned beating cards (see `pair`).
+    private var rowReachUp: CGFloat { th * 0.59 }
+    private var rowReachDown: CGFloat { th * 0.66 }
+
+    /// Where the fight may lie: under the hands across the top, above the
+    /// toast over the player's hand — a toast is about the fight, and must
+    /// not lie across the cards it talks about.
+    private var fightBand: (top: CGFloat, bottom: CGFloat) { (fightTop, toastTop - 4) }
+
+    /// Two rows (a narrow table, four or more pairs): as far apart as the
+    /// band allows, from clear of each other down to the second row's
+    /// attacking cards just covering the foot of the first row's beating
+    /// cards — never their corner indices, which stay at the top left.
+    var pitchY: CGFloat {
+        let band = fightBand
+        let room = band.bottom - band.top - rowReachUp - rowReachDown
+        return min(th * 1.18, max(th * 0.92, room)).rounded()
+    }
+
+    /// The middle of row `row` when the fight has `rows` rows. One row sits
+    /// in the middle between the hands, as long as that keeps it off the
+    /// toast; two share the band, centred in it, or from its top when they
+    /// fill it.
+    func rowY(_ row: Int, of rows: Int) -> CGFloat {
+        let band = fightBand
+        if rows <= 1 {
+            return min(battleCenter.y, band.bottom - rowReachDown).rounded()
+        }
+        let pitch = pitchY
+        let height = rowReachUp + pitch * CGFloat(rows - 1) + rowReachDown
+        let spare = max(0, band.bottom - band.top - height)
+        return (band.top + spare / 2 + rowReachUp + CGFloat(row) * pitch).rounded()
+    }
 
     /// How much of the cloth's width each side keeps for itself at the
     /// fight's height: the deck and the trump on the left, or the side
     /// players and their seats.
     private var sideReserve: CGFloat {
         if playerCount >= 4 { return edge + Self.seatSize.width + 16 }
-        return edge + 12 + tw / 2 + th * 0.30 + th / 2 + 16
+        return edge + 6 + tw / 2 + th * Self.trumpReach + th / 2 + 16
     }
 
     /// Six pairs in a row, or two rows of three when six do not fit.
@@ -362,7 +448,10 @@ struct DurakLayout {
         let inRow = max(1, min(perRow, count - row * perRow))
         let rows = max(1, (count + perRow - 1) / perRow)
         let x = c.x + (CGFloat(column) - CGFloat(inRow - 1) / 2) * pitchX
-        let y = c.y + (CGFloat(row) - CGFloat(rows - 1) / 2) * pitchY
+        // The empty place that would open a new row lies a row's pitch under
+        // the cards as they lie now; they move up to make room only once a
+        // card is really put there.
+        let y = row < rows ? rowY(row, of: rows) : rowY(rows - 1, of: rows) + CGFloat(row - rows + 1) * pitchY
         return CGPoint(x: x.rounded(), y: y.rounded())
     }
 
@@ -402,5 +491,103 @@ struct DurakLayout {
     static func jitter(_ card: Card) -> CGFloat {
         var rng = DeterministicRNG(seed: UInt64(card.durakIndex) &* 0x9E37_79B9_7F4A_7C15 &+ 0xD1CE)
         return CGFloat(rng.next(upperBound: 2001)) / 1000 - 1
+    }
+}
+
+// MARK: - The end of a game
+
+/// Where the end banner and the session's scoreboard go.
+///
+/// The game is over, so what is left on the table is what the eye wants:
+/// the durak's hand turned up, the seats saying who went out. The two panels
+/// look for clear cloth instead of a fixed height — as one group, the board
+/// under the banner; failing that side by side; failing that the banner on
+/// its own with the board beside it wherever it is clear — and are placed
+/// again whenever the table is laid out, so a resize never leaves them apart
+/// or on top of the cards. On a table too crowded for the board anywhere, it
+/// is left out: the Durak menu has the same tally.
+struct DurakEndPlacement: Equatable {
+    var banner: CGRect
+    /// Nil when the board fits nowhere clear.
+    var board: CGRect?
+
+    static let gap: CGFloat = 10
+    /// Kept between a panel and anything it must not cover.
+    static let clearance: CGFloat = 6
+
+    /// `area` is the cloth the panels may use; `obstacles` everything they
+    /// must stay off; `middle` the height the group is centred on when it
+    /// can be.
+    static func place(banner: CGSize, board: CGSize, in area: CGRect, avoiding obstacles: [CGRect],
+                      middle: CGFloat) -> DurakEndPlacement {
+        let blocked = obstacles.filter { !$0.isNull && !$0.isEmpty }.map {
+            $0.insetBy(dx: -clearance, dy: -clearance)
+        }
+        func overlap(_ r: CGRect) -> CGFloat {
+            var total: CGFloat = 0
+            if !area.contains(r) {
+                let inside = area.intersection(r)
+                total += r.width * r.height - (inside.isNull ? 0 : inside.width * inside.height)
+            }
+            for b in blocked where b.intersects(r) {
+                let i = b.intersection(r)
+                total += i.width * i.height
+            }
+            return total
+        }
+        /// The tops, a few points apart, at which a group `height` tall
+        /// stays inside the area, nearest `middle` first.
+        func tops(_ height: CGFloat) -> [CGFloat] {
+            let low = area.minY, high = area.maxY - height
+            guard high >= low else { return [] }
+            let ideal = min(max(middle - height / 2, low), high)
+            var result: [CGFloat] = [ideal]
+            var step: CGFloat = 4
+            while ideal - step >= low || ideal + step <= high {
+                if ideal - step >= low { result.append(ideal - step) }
+                if ideal + step <= high { result.append(ideal + step) }
+                step += 4
+            }
+            return result.map { $0.rounded() }
+        }
+        let midX = area.midX
+
+        // One group, the board under the banner.
+        let stackHeight = banner.height + gap + board.height
+        for top in tops(stackHeight) {
+            let b = CGRect(x: (midX - banner.width / 2).rounded(), y: top, width: banner.width, height: banner.height)
+            let s = CGRect(x: (midX - board.width / 2).rounded(), y: b.maxY + gap, width: board.width, height: board.height)
+            if overlap(b) == 0 && overlap(s) == 0 { return DurakEndPlacement(banner: b, board: s) }
+        }
+        // One group, side by side, their middles level.
+        let rowWidth = banner.width + gap + board.width
+        let rowHeight = max(banner.height, board.height)
+        for top in tops(rowHeight) {
+            let left = (midX - rowWidth / 2).rounded()
+            let b = CGRect(x: left, y: top + (rowHeight - banner.height) / 2, width: banner.width, height: banner.height)
+            let s = CGRect(x: b.maxX + gap, y: top + (rowHeight - board.height) / 2, width: board.width, height: board.height)
+            if overlap(b) == 0 && overlap(s) == 0 { return DurakEndPlacement(banner: b.integral, board: s.integral) }
+        }
+        // The banner where it is clearest, nearest the middle...
+        var best: (rect: CGRect, cost: CGFloat)?
+        for top in tops(banner.height) {
+            let b = CGRect(x: (midX - banner.width / 2).rounded(), y: top, width: banner.width, height: banner.height)
+            let cost = overlap(b)
+            if best == nil || cost < best!.cost { best = (b, cost) }
+            if cost == 0 { break }
+        }
+        let placed = best?.rect ?? CGRect(x: (midX - banner.width / 2).rounded(),
+                                           y: (middle - banner.height / 2).rounded(),
+                                           width: banner.width, height: banner.height)
+        // ...and the board beside it, at any height that is clear.
+        for top in tops(board.height) {
+            for x in [placed.maxX + gap, placed.minX - gap - board.width] {
+                let s = CGRect(x: x.rounded(), y: top, width: board.width, height: board.height)
+                if overlap(s) == 0 && !s.intersects(placed.insetBy(dx: -gap + 1, dy: -gap + 1)) {
+                    return DurakEndPlacement(banner: placed, board: s)
+                }
+            }
+        }
+        return DurakEndPlacement(banner: placed, board: nil)
     }
 }

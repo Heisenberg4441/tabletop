@@ -14,7 +14,7 @@
 //  engine's position if it ever did not.)
 //
 
-import Foundation
+import AppKit
 
 struct DurakTableSnapshot: Equatable {
 
@@ -190,6 +190,11 @@ struct DurakTableSnapshot: Equatable {
 }
 
 extension Suit {
+    /// The suit in its own colour on dark glass — a card's red, lifted a
+    /// little to read there, or white — for the trump pill and the toast
+    /// that names the lowest trump.
+    @MainActor var durakTint: NSColor { isRed ? DurakTrumpPill.red : Palette.textPrimary }
+
     /// The suit's SF Symbol, for pills and toasts.
     var durakSymbolName: String {
         switch self {

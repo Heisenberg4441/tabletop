@@ -33,19 +33,21 @@
 //    transfer when it is cheap and unlikely to come straight back.
 //
 //  BREAKING LOOPS. Once the deck is gone, three players who each lead what
-//  the next cannot beat can pass the same kings round by takes for ever.
-//  People notice and change tack; so do the bots. After a run of takes with
-//  no bito (`DurakState.boutsWithoutBito`, three per player still in), every
-//  bot plays for progress: leads one of its lowest cards, at random, beats
-//  whenever it can, and neither transfers nor piles on — until a bito resets
-//  the count. Random play always escapes such a loop (the fuzzer plays tens of
+//  the next cannot beat can pass the same kings round by takes for ever (and
+//  two can, in perevodnoy, by transferring). People notice and change tack;
+//  so do the bots. After a run of takes with no bito
+//  (`DurakState.boutsWithoutBito`, three per player still in), where a loop
+//  is possible at all, every bot plays for progress: leads one of its lowest
+//  cards, at random, beats whenever it can, and neither transfers nor piles
+//  on — until a bito resets the count. Random play always escapes such a loop (the fuzzer plays tens of
 //  thousands of games to prove it), and the bots then play near enough to it.
 //
 //  Easy plays those rules with no memory, a greedy defence and a little
-//  randomness. Normal remembers the discard and the pick-ups and weighs how
-//  likely the defender is to beat each card. Hard does the same and, once the
-//  deck is gone and two players are left, plays the ending perfectly with
-//  `DurakEndgameSolver`.
+//  randomness. Normal remembers the discard and the pick-ups, weighs how
+//  likely the defender is to beat each card, and counts out the last few
+//  cards of a two-player ending exactly. Hard does the same and, once the
+//  deck is gone and two players are left, plays every ending it can read to
+//  the end perfectly with `DurakEndgameSolver`.
 //
 
 import Foundation
@@ -113,7 +115,14 @@ struct DurakBotView {
         throwInCandidates = state.throwInCandidates(for: seat)
         transferTarget = state.transferTarget
         activeCount = state.activeSeats.count
-        isStalled = state.boutsWithoutBito >= 3 * max(2, state.activeSeats.count)
+        // Only where a loop can happen at all. Between two players nothing
+        // repeats while the deck lasts (every take leaves the attacker short
+        // and drawing), nor ever in podkidnoy (see DurakEndgameSolver): a run
+        // of takes there is simply someone being punished, and should go on
+        // being punished, with throw-ins and all.
+        let active = state.activeSeats.count
+        let canLoop = active > 2 || (state.stockCount == 0 && state.rules.variant == .perevodnoy)
+        isStalled = canLoop && state.boutsWithoutBito >= 3 * max(2, active)
         self.remembers = remembers
         var seen = handSet.union(DurakCardSet(state.tableCards))
         // The trump card under the deck is face up for everyone to see.
@@ -190,6 +199,12 @@ struct DurakBot: Sendable {
         var endLeadCost = 1.0
         var endLeadSet = 5.0
         var endLeadUnbeatable = 2.0
+        /// The defender down to one card or two with the deck gone: what a
+        /// lead they can beat costs, heads up and round a bigger table.
+        var endLeadLastCard = 24.0
+        var endLeadLastTwo = 10.0
+        var endLeadLastCardTable = 8.0
+        var endLeadLastTwoTable = 4.0
         // Defending.
         var beatWeightEndgame = 0.35
         var takeBase = 8.0
@@ -242,16 +257,41 @@ struct DurakBot: Sendable {
         // Podkidnoy between two can never loop, so the solver is always safe
         // there; a perevodnoy position can, and a stalled one is left to the
         // loop-breaking heuristics.
-        if difficulty == .hard && view.isEndgame && view.activeCount <= 2
-            && !(view.isStalled && view.variant == .perevodnoy) {
-            var solver = DurakEndgameSolver(trump: state.trump, transfers: state.rules.variant == .perevodnoy)
+        if let reach = solverReach(transfers: view.variant == .perevodnoy), view.isEndgame, view.activeCount <= 2,
+           !(view.isStalled && view.variant == .perevodnoy) {
+            var solver = DurakEndgameSolver(trump: state.trump, transfers: state.rules.variant == .perevodnoy,
+                                            budget: reach.budget)
             // Keeps the heuristic's move when it is as good as any — it is
             // the more natural of equals — and otherwise plays the best.
-            if let best = solver.choose(in: state, for: seat, preferring: choice), legal.contains(best) {
+            if let best = solver.choose(in: state, for: seat, preferring: choice, maximumCards: reach.cards),
+               legal.contains(best) {
                 choice = best
             }
         }
         return (choice, false)
+    }
+
+    /// How big a two-player ending, deck gone, this bot reads to the end —
+    /// cards in play, and the positions it may look at — or nil if it never
+    /// does.
+    ///
+    /// Hard reads every ending it can finish in its thinking pause. Normal
+    /// reads the last few cards, as anyone who remembers what has gone does:
+    /// with four or five cards between two players, "if I lead the queen he
+    /// cannot beat it and has to take" is plain counting, not genius — and a
+    /// won courtyard ending thrown away by leading the one card the last
+    /// card beats is the mistake nobody forgives. Easy counts nothing.
+    func solverReach(transfers: Bool) -> (cards: Int, budget: Int)? {
+        switch difficulty {
+        case .hard:
+            return transfers
+                ? (DurakEndgameSolver.maximumCards, DurakEndgameSolver.defaultBudget)
+                : (DurakEndgameSolver.maximumCardsWithoutTransfers, DurakEndgameSolver.deepBudget)
+        case .normal:
+            return (8, 20_000)
+        case .easy:
+            return nil
+        }
     }
 
     /// A human-looking pause before a bot's move: 0.5–1.2 s, a touch longer
@@ -342,9 +382,22 @@ struct DurakBot: Sendable {
             } else {
                 // No deck: every card shed is a step towards getting out.
                 // Lead sets, and cards the defender has to pick up.
-                let beatable = weighsOdds ? view.probabilityCanBeat(defender, card) : 0.7
+                let left = view.counts[defender]
+                let nearOut = left <= 2
+                // Even without a memory, a player sees that the defender is
+                // down to a card or two, and weighs what might beat the lead.
+                let beatable = weighsOdds || nearOut ? view.probabilityCanBeat(defender, card) : 0.7
                 score = tuning.endLeadCost * Double(view.cost(card)) - tuning.endLeadSet * same
                     - tuning.endLeadUnbeatable * (1 - beatable)
+                if nearOut {
+                    // A lead the defender beats with their last card lets them
+                    // out — heads up, that makes you the durak, whatever the
+                    // card was worth. Round a bigger table it only lets one
+                    // more escape, so it weighs less.
+                    let weight = view.activeCount <= 2 ? (left == 1 ? tuning.endLeadLastCard : tuning.endLeadLastTwo)
+                                                       : (left == 1 ? tuning.endLeadLastCardTable : tuning.endLeadLastTwoTable)
+                    score += weight * beatable
+                }
             }
             scored.append((card, score))
         }

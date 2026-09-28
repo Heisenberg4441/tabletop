@@ -147,12 +147,14 @@ enum DurakStatisticsWindow {
             guard whole > 0 else { return "–" }
             return NumberFormatter.localizedString(from: NSNumber(value: Double(part) / Double(whole)), number: .percent)
         }
+        // Counts in the reader's own digits and grouping.
+        func count(_ n: Int) -> String { String.localizedStringWithFormat("%d", n) }
         let rows: [(String, (DurakStatistics.Record) -> String)] = [
-            (NSLocalizedString("Games played", comment: "durak statistics"), { "\($0.played)" }),
-            (NSLocalizedString("Not the durak", comment: "durak statistics: games the player escaped"), { "\($0.escaped)" }),
-            (NSLocalizedString("Out first", comment: "durak statistics: games the player went out first"), { "\($0.firstOut)" }),
-            (NSLocalizedString("The durak", comment: "durak statistics: games the player lost («Дурак»)"), { "\($0.durak)" }),
-            (NSLocalizedString("Draws", comment: "durak statistics («Ничья»)"), { "\($0.draws)" }),
+            (NSLocalizedString("Games played", comment: "durak statistics"), { count($0.played) }),
+            (NSLocalizedString("Not the durak", comment: "durak statistics: games the player escaped"), { count($0.escaped) }),
+            (NSLocalizedString("Out first", comment: "durak statistics: games the player went out first"), { count($0.firstOut) }),
+            (NSLocalizedString("The durak", comment: "durak statistics: games the player lost («Дурак»)"), { count($0.durak) }),
+            (NSLocalizedString("Draws", comment: "durak statistics («Ничья»)"), { count($0.draws) }),
             (NSLocalizedString("Escape rate", comment: "durak statistics: share of games not lost"), { percent($0.escaped, $0.played) }),
         ]
         let grid = NSGridView(numberOfColumns: 3, rows: 0)

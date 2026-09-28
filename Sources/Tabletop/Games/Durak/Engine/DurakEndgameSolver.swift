@@ -128,14 +128,40 @@ struct DurakEndgameSolver {
     }
 
     /// Enough for nearly every ending of up to fourteen cards in play, in
-    /// well under a tenth of a second in a release build.
+    /// well under a tenth of a second in a release build, and about 50 MB at
+    /// most.
+    ///
+    /// Perevodnoy stays at this. Its hard endings are the ones whose lines
+    /// repeat, and those need the whole reachable graph walked (see above) —
+    /// measured over real Hard games, four times the budget solves one more
+    /// fourteen-card ending in forty and costs four times the memory; the
+    /// rest do not finish even at two million positions (700 MB). The
+    /// heuristics play them until they shrink.
     static let defaultBudget = 120_000
+
+    /// Podkidnoy never repeats, so alpha-beta's table is all the memory it
+    /// needs: this reads most sixteen-card endings (about 55 MB, a tenth of
+    /// a second — well inside the bot's pause for thought). A debug build
+    /// searches several times slower, so there it reads a card less, in the
+    /// same time.
+    #if DEBUG
+    static let deepBudget = defaultBudget
+    #else
+    static let deepBudget = 400_000
+    #endif
 
     /// Endings with more cards than this in play (both hands and the table)
     /// are not attempted: measured over real games, they almost always run
     /// out of budget, which would only burn time. The heuristics play them
     /// until they shrink.
     static let maximumCards = 15
+
+    /// Without transfers, with `deepBudget`, a card further.
+    #if DEBUG
+    static let maximumCardsWithoutTransfers = maximumCards
+    #else
+    static let maximumCardsWithoutTransfers = 16
+    #endif
 
     // MARK: From the engine
 
@@ -235,10 +261,11 @@ struct DurakEndgameSolver {
     /// Cheaper than `evaluateMoves`: the preferred move gets an exact value,
     /// and every other move only has to show whether it beats that — a
     /// narrow window that alpha-beta usually settles in a few nodes.
-    mutating func choose(in state: DurakState, for seat: Int, preferring preferred: DurakAction) -> DurakAction? {
+    mutating func choose(in state: DurakState, for seat: Int, preferring preferred: DurakAction,
+                         maximumCards: Int = DurakEndgameSolver.maximumCards) -> DurakAction? {
         guard state.actor == seat, let (root, _) = Self.position(of: state, for: seat) else { return nil }
         let inPlay = (root.hand0 | root.hand1 | root.table).nonzeroBitCount
-        guard inPlay <= Self.maximumCards else { return nil }
+        guard inPlay <= maximumCards else { return nil }
         var moves = orderedMoves(root)
         if let i = moves.firstIndex(where: { Self.action(for: $0) == preferred }) {
             moves.insert(moves.remove(at: i), at: 0)
@@ -264,9 +291,24 @@ struct DurakEndgameSolver {
             }
             return Self.action(for: choice)
         } catch is Repetition {
-            guard let values = evaluateMoves(in: state, for: seat, preferring: preferred),
-                  let best = values.map(\.value).max() else { return nil }
-            return values.first { $0.value == best }?.action
+            // Straight to the graph: alpha-beta over every move again would
+            // only spend the budget the walk needs, meeting the same repeat.
+            nodes = 0
+            guard let values = retrograde(from: root) else { return nil }
+            var best: Int8 = -2
+            var choice = moves[0]
+            for move in moves {
+                let value: Int8
+                switch apply(move, to: root) {
+                case .end(let v): value = v
+                case .position(let next): value = values[next] ?? 0
+                }
+                if value > best {
+                    best = value
+                    choice = move
+                }
+            }
+            return Self.action(for: choice)
         } catch {
             return nil
         }

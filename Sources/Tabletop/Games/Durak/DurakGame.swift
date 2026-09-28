@@ -122,6 +122,7 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
         }
         match.onChange = { [weak self] in self?.matchChanged() }
         table.onAction = { [weak self] action in self?.match.play(action) ?? false }
+        table.onLayout = { [weak self] in self?.placeEnd() }
         // Nothing ticks until the game is on screen.
         if !isActive { table.scheduler.suspend() }
 
@@ -144,6 +145,19 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
 
     static var youName: String { NSLocalizedString("You", comment: "durak: the player's seat") }
 
+    /// The end of the responder chain for the table's keys. Whatever bare
+    /// key the table and its buttons did not want — Space while a bot
+    /// thinks, Return with nothing to say, a letter that means nothing here —
+    /// stops here rather than walking on to the window, where AppKit answers
+    /// an unhandled key with the system alert sound. That sound is exactly
+    /// what this app never makes. ⌘, ⌃ and ⌥ keys go on as usual, and so
+    /// does Tab, which the window uses to move the keyboard focus.
+    override func keyDown(with event: NSEvent) {
+        let bare = event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+        if bare && event.keyCode != 48 { return }
+        super.keyDown(with: event)
+    }
+
     var preferredFirstResponder: NSView? {
         optionsCard?.isPresented == true ? optionsCard : table
     }
@@ -155,6 +169,9 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
         guard isViewLoaded else { return }
         table.scheduler.resume()
         match.release(.inactive)
+        // The window puts the pills back as they were posted; the suit's
+        // colour goes back on with them.
+        DurakTrumpPill.paint(match.state?.trump, in: view.window)
     }
 
     func gameWillResignActive() {
@@ -180,6 +197,10 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
             settings.save()
             table.handOrder = settings.handOrder
         }
+        // A game that ended while its last moves were still being shown has
+        // not been counted yet — the table was about to. It counts now, as
+        // it ended: New Game in that second is no way out of being the durak.
+        if let state = session?.state, state.isOver { recordResult(state) }
         recordAbandonedGame()
         dismissEnd(animated: false)
         Toast.hide(in: table, animated: false)
@@ -363,9 +384,7 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
     private func refreshPills() {
         var items: [StatusPillItem] = []
         if let state = match?.state {
-            items.append(StatusPillItem(
-                id: "trump", text: NSLocalizedString("Trump", comment: "durak pill: the trump suit («Козырь»)"),
-                symbolName: state.trump.durakSymbolName, isEmphasized: state.bout == 0 && !state.isOver))
+            items.append(DurakTrumpPill.item(for: state.trump, emphasized: state.bout == 0 && !state.isOver))
             if state.stockCount > 0 {
                 // "Deck 12" is a label and its number, not a counted noun.
                 items.append(StatusPillItem(
@@ -377,22 +396,27 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
                                         symbolName: state.rules.variant == .perevodnoy ? "arrow.turn.up.right" : "plus.rectangle.on.rectangle"))
         }
         TopBarStatus.set(items, for: .durak)
+        DurakTrumpPill.paint(match?.state?.trump, in: view.window)
     }
 
     // MARK: The end of a game
 
     private func gameEnded(_ state: DurakState) {
-        guard var session, let result = state.result else { return }
-        if !session.resultRecorded {
-            statistics[state.rules.variant].record(result.outcome(for: DurakMatch.human, outOrder: state.outOrder))
-            statistics.save()
-            session.scoreboard.record(result)
-            session.lastResult = result
-            session.resultRecorded = true
-            self.session = session
-            saveSession(force: true)
-        }
+        recordResult(state)
         showEnd(state, animated: table.window != nil)
+    }
+
+    /// Counts a finished game — the statistics, tonight's tally, who defends
+    /// first next time — exactly once, however it is reached.
+    private func recordResult(_ state: DurakState) {
+        guard var session, let result = state.result, !session.resultRecorded else { return }
+        statistics[state.rules.variant].record(result.outcome(for: DurakMatch.human, outOrder: state.outOrder))
+        statistics.save()
+        session.scoreboard.record(result)
+        session.lastResult = result
+        session.resultRecorded = true
+        self.session = session
+        saveSession(force: true)
     }
 
     private func showEnd(_ state: DurakState, animated: Bool) {
@@ -433,12 +457,41 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
 
         let loser: Int? = { if case .durak(let s) = result { return s } else { return nil } }()
         let board = DurakScoreboardView(names: names, scoreboard: session.scoreboard, loser: loser)
-        board.frame.origin = CGPoint(x: ((table.bounds.width - board.frame.width) / 2).rounded(),
-                                     y: (banner.frame.maxY + Spacing.m).rounded())
-        board.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        // Placed with the banner by `placeEnd`, on every layout: nothing
+        // about the two may be left to their own autoresizing, which moves
+        // each by its own margins until they drift apart.
+        board.autoresizingMask = []
         table.addSubview(board)
-        if animated { Motion.present(board, spring: .gentle, from: 0.96, rise: 10) }
         scoreboardView = board
+        placeEnd()
+        if animated && !board.isHidden { Motion.present(board, spring: .gentle, from: 0.96, rise: 10) }
+    }
+
+    /// The end banner and the scoreboard, as one group on clear cloth: off
+    /// the durak's turned-up hand, your own, the pile and the seats. Runs
+    /// whenever the table is laid out — a resize, full screen, a finished
+    /// game restored into a window of another size.
+    private func placeEnd() {
+        guard let banner = endBanner, banner.superview === table else { return }
+        let layout = table.layoutModel
+        let area = layout.play.insetBy(dx: 10, dy: 4)
+        let boardSize = scoreboardView?.frame.size ?? .zero
+        let placement = DurakEndPlacement.place(banner: banner.frame.size, board: boardSize, in: area,
+                                                avoiding: table.endObstacles, middle: layout.battleCenter.y)
+        banner.frame.origin = placement.banner.origin
+        if let board = scoreboardView {
+            if let frame = placement.board {
+                board.frame.origin = frame.origin
+                board.isHidden = false
+            } else {
+                board.isHidden = true
+            }
+        }
+    }
+
+    /// The end panels' frames, for the self-tests.
+    var endFramesForTesting: (banner: CGRect?, board: CGRect?) {
+        (endBanner?.frame, scoreboardView.flatMap { $0.isHidden ? nil : $0.frame })
     }
 
     private func dismissEnd(animated: Bool) {
@@ -606,7 +659,7 @@ final class DurakGame: NSViewController, TabletopGame, NSMenuItemValidation, NSM
         if let card = scenario.select { table.click(card.durakIndex) }
         if let toast = scenario.toast {
             table.toast(toast.text, symbol: toast.symbol,
-                        tint: scenario.reveal != nil ? Palette.accent : Palette.textSecondary)
+                        tint: scenario.reveal.map { $0.card.suit.durakTint } ?? Palette.textSecondary)
         }
         view.layoutSubtreeIfNeeded()
     }

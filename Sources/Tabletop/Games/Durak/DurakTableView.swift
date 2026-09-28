@@ -20,13 +20,17 @@
 //
 //  * Click: a card that can do only one thing does it. A defender's card
 //    that could beat more than one attacking card — or beat one and also
-//    transfer — is picked up instead: the cards it can beat glow (and, in
-//    perevodnoy, the transfer place beside the row), and the next click
-//    chooses. Clicking it again, or the cloth, or Escape, puts it back.
+//    transfer — is picked up instead: the cards it can beat glow inside gold
+//    rings (in perevodnoy, so does the transfer place beside the row) while
+//    the rest of the hand stops glowing, and the next click chooses.
+//    Clicking it again, or the cloth, or Escape, puts it back.
 //  * Drag: anywhere between the hands to attack or throw in; onto an
 //    attacking card to beat that one; onto the transfer place to transfer.
 //  * Keys: the action bar's buttons carry T (Take) and Return (Bito, Pass,
-//    Done); Space does what Return does.
+//    Done); Space does what Return does. T is also matched by the key's
+//    place on the keyboard, so it takes on a Russian layout too, where that
+//    key types «е». Every bare key the table is sent ends here or in the
+//    game — none falls through to the system's alert sound.
 //
 
 import AppKit
@@ -98,6 +102,10 @@ final class DurakTableView: CardTableView {
     /// A defender's card picked up by a click, waiting for its target.
     private(set) var selectedCard: Card?
 
+    /// After every layout of the table — for the chrome the game lays over
+    /// it (the end banner and the scoreboard), which must move with it.
+    var onLayout: (() -> Void)?
+
     // MARK: Chrome
 
     let actionBar = ActionBar()
@@ -109,6 +117,9 @@ final class DurakTableView: CardTableView {
     /// Where the pointer is during a drag, for lighting what it is over.
     private var dragPoint: CGPoint?
     private var transferBadge: TableBadge?
+    /// Gold rings round the attacking cards a picked-up (or dragged) card
+    /// can beat: where the next click, or the drop, goes.
+    private var targetRings: [CAShapeLayer] = []
     private var speech: [Int: TableBadge] = [:]
     /// The lowest trump being shown at the opening.
     private var reveal: (seat: Int, card: Card)?
@@ -280,6 +291,19 @@ final class DurakTableView: CardTableView {
 
     override func layoutTable() {
         sync(duration: 0)
+        onLayout?()
+    }
+
+    /// Everything the end-of-game panels must stay off: the cards still on
+    /// the cloth (the durak's hand, your own, the bito pile) and the seats.
+    var endObstacles: [CGRect] {
+        var boxes: [CGRect] = []
+        for id in spriteIDs {
+            guard let sprite = existingSprite(id), !sprite.isHidden, let pose = pose(of: id), !pose.isHidden else { continue }
+            boxes.append(TableLayout.boundingBox(of: pose, cardSize: cardSize))
+        }
+        for seat in seats where !seat.isHidden { boxes.append(seat.frame) }
+        return boxes
     }
 
     private func placeChrome(_ layout: DurakLayout) {
@@ -291,11 +315,12 @@ final class DurakTableView: CardTableView {
         if left > 0 {
             let text = String.localizedStringWithFormat(
                 NSLocalizedString("%d", comment: "durak: the number of cards left in the deck, under it"), left)
+            let point = layout.deckCountPoint(trumpOnly: left == 1)
             if let deckBadge {
                 deckBadge.update(text: text)
-                deckBadge.move(to: layout.deckCountPoint, anchor: .below)
+                deckBadge.move(to: point, anchor: .below)
             } else {
-                deckBadge = TableBadge.show(text, in: self, at: layout.deckCountPoint, anchor: .below, animated: false)
+                deckBadge = TableBadge.show(text, in: self, at: point, anchor: .below, animated: false)
             }
             deckBadge?.setAccessibilityLabel(Plural.format(
                 left, one: NSLocalizedString("%d card left in the deck", comment: "durak accessibility"),
@@ -319,13 +344,18 @@ final class DurakTableView: CardTableView {
               hot: attacking && dragPoint.map { layout.fightRect.contains($0) } == true)
         if showZone {
             // The word under the place, not in it: the place stays the shape
-            // of the card that goes there.
-            let point = CGPoint(x: zoneRect.midX, y: zoneRect.maxY + 2)
+            // of the card that goes there. When the place opens a second
+            // row, just over your hand, the word goes beside it instead,
+            // rather than across your cards.
+            let below = zoneRect.maxY + 2 + TableBadge.height + 6 <= layout.toastTop
+            let point = below ? CGPoint(x: zoneRect.midX, y: zoneRect.maxY + 2)
+                              : CGPoint(x: zoneRect.maxX + 2, y: zoneRect.midY)
+            let anchor: TableBadge.Anchor = below ? .below : .trailing
             if let transferBadge {
-                transferBadge.move(to: point, anchor: .below)
+                transferBadge.move(to: point, anchor: anchor)
             } else {
                 transferBadge = TableBadge.show(NSLocalizedString("Transfer", comment: "durak: the place a transfer card goes («Перевести»)"),
-                                                symbolName: "arrow.turn.up.right", in: self, at: point, anchor: .below,
+                                                symbolName: "arrow.turn.up.right", in: self, at: point, anchor: anchor,
                                                 animated: Motion.isEnabled && window != nil)
             }
         } else if let transferBadge {
@@ -333,9 +363,58 @@ final class DurakTableView: CardTableView {
             self.transferBadge = nil
         }
         for (seat, badge) in speech {
+            // A word from a seat this table no longer has (a smaller table
+            // was just dealt) goes with it.
+            guard layout.places.indices.contains(seat) else {
+                badge.hide(animated: false)
+                speech[seat] = nil
+                continue
+            }
             let spot = layout.speechPoint(seat)
             badge.move(to: spot.point, anchor: spot.anchor)
         }
+    }
+
+    /// A gold ring round each attacking card the picked-up or dragged card
+    /// can beat — stronger than the glow every playable card has, so the
+    /// eye goes straight to where the next click lands.
+    private func placeTargetRings() {
+        let targets = selectionTargets.union(dragTargets).sorted { $0.durakIndex < $1.durakIndex }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        while targetRings.count < targets.count {
+            let ring = CAShapeLayer()
+            ring.fillColor = Palette.accent.withAlphaComponent(0.10).cgColor
+            ring.strokeColor = Palette.accent.cgColor
+            ring.lineWidth = 2
+            ring.lineDashPattern = [7, 4]
+            ring.isHidden = true
+            addTableLayer(ring, z: -4)
+            targetRings.append(ring)
+        }
+        for (i, ring) in targetRings.enumerated() {
+            guard i < targets.count, let pose = pose(of: Self.id(targets[i])) else {
+                ring.isHidden = true
+                continue
+            }
+            let size = CGSize(width: cardSize.width * pose.scale + 12, height: cardSize.height * pose.scale + 12)
+            let wasHidden = ring.isHidden
+            ring.bounds = CGRect(origin: .zero, size: size)
+            ring.path = CGPath(roundedRect: ring.bounds, cornerWidth: cornerRadius * pose.scale + 6,
+                               cornerHeight: cornerRadius * pose.scale + 6, transform: nil)
+            ring.position = pose.position
+            ring.transform = CATransform3DMakeRotation(pose.rotation, 0, 0, 1)
+            ring.isHidden = false
+            if wasHidden && Motion.isEnabled && window != nil {
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 0
+                fade.toValue = 1
+                fade.duration = Motion.standard
+                fade.timingFunction = Motion.easeOut
+                ring.add(fade, forKey: "durak.ring.fade")
+            }
+        }
+        CATransaction.commit()
     }
 
     /// A dashed place on the cloth: quiet, or gold while something is over it.
@@ -405,17 +484,32 @@ final class DurakTableView: CardTableView {
     }
 
     private func refreshHighlights() {
+        let hand = Set(snapshot.hands.first ?? [])
+        let playable = (prompt?.playable ?? []).intersection(hand)
         var lit = Set<Int>()
-        if let prompt, dragCard == nil {
-            for card in prompt.playable where snapshot.hands.first?.contains(card) == true { lit.insert(Self.id(card)) }
+        // While a card is picked up or dragged, only where it can go is lit:
+        // the rest of the hand glowing too would say "or these".
+        if selectedCard == nil && dragCard == nil {
+            for card in playable { lit.insert(Self.id(card)) }
         }
         for card in selectionTargets.union(dragTargets) { lit.insert(Self.id(card)) }
         setPlayable(lit)
+        litForTesting = lit
         let selected = selectedCard.map(Self.id)
         for id in selectedSprites where id != selected { setSelected(id, false) }
         if let selected { setSelected(selected, true) }
-        setHoverable(Set((snapshot.hands.first ?? []).map(Self.id)))
+        // Only a card that can be played rises under the pointer; the rest
+        // stay put, as the lift is the sign of a legal move.
+        hoverableForTesting = Set(playable.map(Self.id))
+        setHoverable(hoverableForTesting)
+        placeTargetRings()
     }
+
+    /// What the last highlight pass lit and let rise under the pointer.
+    private(set) var litForTesting: Set<Int> = []
+    private(set) var hoverableForTesting: Set<Int> = []
+    var ringsShowingForTesting: Int { targetRings.filter { !$0.isHidden }.count }
+    var speechSeatsForTesting: [Int] { speech.keys.sorted() }
 
     /// The attacking cards the selected card can beat.
     private var selectionTargets: Set<Card> {
@@ -432,7 +526,7 @@ final class DurakTableView: CardTableView {
             let canTransfer = card.map { prompt?.actions(for: $0).contains(.transfer($0)) == true } ?? false
             toast(canTransfer ? NSLocalizedString("Choose a card to beat, or transfer", comment: "durak hint")
                               : NSLocalizedString("Choose the card to beat", comment: "durak hint"),
-                  symbol: "target")
+                  symbol: "target", overSelection: true)
         }
     }
 
@@ -587,22 +681,34 @@ final class DurakTableView: CardTableView {
     // MARK: Keys
 
     override func handleKeyDown(_ event: NSEvent) -> Bool {
+        // ⌘, ⌃ and ⌥ keys are the menus' and the system's; and while the New
+        // Game card is up its own keys (and the kit's routing) decide.
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              !isUnderOptionsCard else { return false }
         switch event.keyCode {
         case 49:    // Space: whatever Return does in the bar.
-            if let button = actionBar.button(for: "pass"), button.isEnabled, !actionBar.isHidden {
+            // Held down, it says Bito once — not again the moment you are
+            // next asked, as a key repeating into the next bout would.
+            if !event.isARepeat, let button = actionBar.button(for: "pass"), button.isEnabled, !actionBar.isHidden {
                 button.performPress()
-                return true
             }
-            return false
-        case 53:    // Escape: put a picked-up card back.
-            if selectedCard != nil {
-                clearSelection()
-                return true
+            return true
+        case 17:    // T, by its place on the keyboard: «е» on a Russian layout.
+            if !event.isARepeat, let button = actionBar.button(for: "take"), button.isEnabled, !actionBar.isHidden {
+                button.performPress()
             }
-            return false
+            return true
+        case 53:    // Escape: put a picked-up card back. Escape is the game's.
+            clearSelection()
+            return true
         default:
             return false
         }
+    }
+
+    /// Whether a New Game card is up over this table.
+    private var isUnderOptionsCard: Bool {
+        OptionsCard.presentedCards.contains { $0.window != nil && $0.window === window }
     }
 
     // MARK: Accessibility
@@ -644,16 +750,33 @@ final class DurakTableView: CardTableView {
 
     /// A toast just above the player's hand — where the eye already is, and
     /// clear of the opponents across the top.
-    func toast(_ text: String, symbol: String? = nil, tint: NSColor = Palette.textSecondary) {
+    /// `overSelection`: a card has just been picked up out of the hand and
+    /// rises higher than the others, so the toast goes higher too — unless
+    /// that would put it on the fight, whose lit targets say the same.
+    func toast(_ text: String, symbol: String? = nil, tint: NSColor = Palette.textSecondary, overSelection: Bool = false) {
         let layout = layoutModel
-        // Clear of a card picked up out of the hand, which rises higher still.
-        let offset = max(bottomReserve, bounds.height - (layout.handTop - selectionLift * cardSize.height - 8))
+        var bottom = layout.toastBottom
+        if overSelection {
+            bottom = layout.handTop - selectionLift * cardSize.height - 8
+            let fightBottom = snapshot.table.indices.reduce(CGFloat(-CGFloat.greatestFiniteMagnitude)) { lowest, i in
+                let pair = snapshot.table[i]
+                let poses = layout.pair(i, of: snapshot.table.count, attack: pair.attack, defence: pair.defence)
+                let attack = TableLayout.boundingBox(of: poses.attack, cardSize: cardSize).maxY
+                let defence = pair.defence == nil ? attack : TableLayout.boundingBox(of: poses.defence, cardSize: cardSize).maxY
+                return max(lowest, attack, defence)
+            }
+            guard bottom - DurakLayout.toastHeight >= fightBottom + 4 else {
+                Toast.hide(in: self)
+                return
+            }
+        }
+        let offset = max(bottomReserve, bounds.height - bottom)
         Toast.show(text, symbolName: symbol, symbolTint: tint, in: self, placement: .bottom(offset: offset))
     }
 
     /// A word said by `seat` — "Pass", "Done" — pinned beside their hand for
     /// a moment.
-    private func say(_ text: String, seat: Int) {
+    func say(_ text: String, seat: Int) {
         let spot = layoutModel.speechPoint(seat)
         speech[seat]?.hide(animated: false)
         let badge = TableBadge.show(text, in: self, at: spot.point, anchor: spot.anchor,
@@ -701,6 +824,9 @@ final class DurakTableView: CardTableView {
         dealToken = nil
         reveal = nil
         dragTargets = []
+        // A "Pass" still pinned from the old game — its seat may not even be
+        // at the new table.
+        hideSpeech()
     }
 
     private func runNextStep() {
@@ -749,7 +875,7 @@ final class DurakTableView: CardTableView {
                          name(attacker), shown.description)
             reveal = (attacker, shown)
             sync(duration: 0.36)
-            toast(text, symbol: shown.suit.durakSymbolName, tint: Palette.accent)
+            toast(text, symbol: shown.suit.durakSymbolName, tint: shown.suit.durakTint)
             // The reveal is information, not decoration: it holds long
             // enough to read even with motion off.
             return 2.1

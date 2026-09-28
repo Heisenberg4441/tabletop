@@ -592,6 +592,10 @@ struct DurakState: Hashable, Sendable {
 
     // MARK: - Checking
 
+    /// Whether `card` is one of the 52 at all. The kit's `Card` decodes any
+    /// byte, and only a real code has a suit and a rank to ask for.
+    static func isCard(_ card: Card) -> Bool { card.code < 52 }
+
     /// Every card accounted for exactly once and the table obeying the rules.
     /// A restored game that fails this is thrown away rather than played.
     var isConsistent: Bool {
@@ -599,8 +603,23 @@ struct DurakState: Hashable, Sendable {
         guard (2...4).contains(n), hands.count == n, known.count == n,
               passedRanks.count == n, doneSeats.count == n else { return false }
         let all = hands.flatMap { $0 } + stock + discard + tableCards
+        // Codes first: a card read from a damaged file may not be a card at
+        // all, and asking such a one its suit would trap.
+        guard all.allSatisfy(Self.isCard), Self.isCard(trumpCard), trumpCard.isDurakCard,
+              known.joined().allSatisfy(Self.isCard), shownTrump.map(Self.isCard) ?? true else { return false }
         guard all.count == 36, Set(all).count == 36, all.allSatisfy(\.isDurakCard) else { return false }
         guard stock.isEmpty || stock[0] == trumpCard else { return false }
+        // The bookkeeping the bots and the solver index and convert with.
+        guard actionCount >= 0, bout >= 0, boutsWithoutBito >= 0,
+              passedRanks.allSatisfy({ (-1...0x1FF).contains($0) }) else { return false }
+        guard Set(outOrder).count == outOrder.count, outOrder.allSatisfy({ (0..<n).contains($0) && isOut($0) })
+        else { return false }
+        if case .durak(let loser)? = result, !(0..<n).contains(loser) { return false }
+        // Whoever is asked must be a seat still playing — a bot is about to
+        // think for it.
+        if phase != .over {
+            guard let actor, (0..<n).contains(actor), !isOut(actor), result == nil else { return false }
+        }
         for pair in table {
             if let defence = pair.defence, !defence.durakBeats(pair.attack, trump: trump) { return false }
         }
@@ -664,6 +683,9 @@ extension DurakState: Codable {
             ?? Array(repeating: -1, count: n)
         doneSeats = ((try? c.decodeIfPresent([Bool].self, forKey: .doneSeats)) ?? nil)
             ?? Array(repeating: false, count: n)
+        guard hands.count == n else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "a hand per seat"))
+        }
         if known.count != n || !(0..<n).allSatisfy({ known[$0].allSatisfy(hands[$0].contains) }) {
             known = Array(repeating: [], count: n)
         }

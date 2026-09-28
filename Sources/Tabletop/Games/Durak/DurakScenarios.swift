@@ -24,10 +24,14 @@ struct DurakScenario {
     /// A card of the player's picked up by a click, its targets lit.
     var select: Card?
 
-    /// The five the spec asks for, then three more moments worth checking:
-    /// the transfer place, a click that needs a target, the opening's
-    /// lowest trump — and the New Game card over an empty table.
-    static let names = ["attack", "defend", "take", "endgame", "gameover", "transfer", "choose", "opening", "options"]
+    /// The five the spec asks for, then more moments worth checking: the
+    /// transfer place, a click that needs a target, the opening's lowest
+    /// trump, the New Game card over an empty table — and the crowded ones:
+    /// you as the durak, your own lowest trump held up, a second row of
+    /// pairs, a transfer after two transfers, a hand of twenty-odd cards,
+    /// and the trump lying alone once the deck is gone.
+    static let names = ["attack", "defend", "take", "endgame", "gameover", "transfer", "choose", "opening", "options",
+                        "you-durak", "you-start", "two-rows", "transfer-4", "big-hand", "last-trump"]
 
     /// The scenario called `name`, or nil if no seed within reach produced it.
     static func make(_ name: String) -> DurakScenario? {
@@ -117,6 +121,52 @@ struct DurakScenario {
                 return result
             }
             return nil
+        case "you-durak":
+            // Four players, and you are left holding the cards.
+            guard let over = search(players: 4, variant: .podkidnoy, seeds: 1...400, predicate: { s in
+                s.result == .durak(0) && s.hands[0].count >= 5
+            }) else { return nil }
+            var result = scenario(from: over, toast: nil)
+            result.scoreboard.games = 4
+            result.scoreboard.durakCounts = [2, 1, 0, 1]
+            return result
+        case "you-start":
+            // The first deal of two: you hold the lowest trump, and show it.
+            for seed in UInt64(1)...200 {
+                let game = DurakState.newGame(rules: DurakRules(playerCount: 2), seed: seed)
+                guard let shown = game.state.shownTrump, game.state.attacker == 0 else { continue }
+                var result = scenario(from: game.state, toast: nil)
+                result.toast = (String(format: NSLocalizedString("You have the %@ and start", comment: "durak opening: your lowest trump"),
+                                       shown.description), shown.suit.durakSymbolName)
+                result.reveal = (0, shown)
+                return result
+            }
+            return nil
+        case "two-rows":
+            // Four at the table, four pairs or more on it, you to defend: on
+            // a narrow window, two rows under the toast.
+            return search(players: 4, variant: .podkidnoy, seeds: 1...600) { s in
+                s.actor == 0 && s.phase == .defend && s.defender == 0 && s.table.count >= 4 && s.stockCount >= 1
+            }.map { scenario(from: $0, toast: (NSLocalizedString("Defend", comment: "durak toast: it is your turn to beat the cards"),
+                                               "shield.lefthalf.filled")) }
+        case "transfer-4":
+            // Perevodnoy with four: the attack has come round to you, and
+            // may go on.
+            return search(players: 4, variant: .perevodnoy, seeds: 1...2000) { s in
+                s.actor == 0 && s.phase == .defend && s.defender == 0 && s.transferTarget != nil && s.table.count >= 3
+                    && s.legalActions(for: 0).contains { if case .transfer = $0 { return true } else { return false } }
+            }.map { scenario(from: $0, toast: nil) }
+        case "big-hand":
+            // Two players, and you have taken everything thrown at you: a
+            // hand of twenty-odd, every index still readable.
+            return search(players: 2, variant: .podkidnoy, seeds: 1...200, you: { s in s.phase == .defend ? .take : nil }) { s in
+                s.actor == 0 && s.hands[0].count >= 20 && s.phase == .defend
+            }.map { scenario(from: $0, toast: nil) }
+        case "last-trump":
+            // The deck is down to the turned trump, lying on its own.
+            return search(players: 3, variant: .podkidnoy, seeds: 1...400) { s in
+                s.stockCount == 1 && s.actor == 0 && s.phase == .lead
+            }.map { scenario(from: $0, toast: nil) }
         default:
             return nil
         }
@@ -124,7 +174,10 @@ struct DurakScenario {
 
     /// The first position, over `seeds`, that `predicate` accepts, with every
     /// seat played by Normal bots.
+    /// `you` may play the player's seat its own way — nil leaves the move to
+    /// the bot.
     static func search(players: Int, variant: DurakVariant, seeds: ClosedRange<UInt64>,
+                       you: (DurakState) -> DurakAction? = { _ in nil },
                        predicate: (DurakState) -> Bool) -> DurakState? {
         let bot = DurakBot(.normal)
         for seed in seeds {
@@ -132,7 +185,8 @@ struct DurakScenario {
             for _ in 0..<600 {
                 if predicate(state) { return state }
                 guard let actor = state.actor else { break }
-                guard (try? state.apply(bot.decide(in: state, seat: actor), by: actor)) != nil else { break }
+                let action = actor == 0 ? (you(state) ?? bot.decide(in: state, seat: actor)) : bot.decide(in: state, seat: actor)
+                guard (try? state.apply(action, by: actor)) != nil else { break }
             }
             if predicate(state) { return state }
         }

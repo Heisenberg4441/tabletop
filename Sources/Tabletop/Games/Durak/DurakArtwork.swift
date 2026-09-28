@@ -38,8 +38,9 @@ enum DurakArtwork {
 
         // The deck on the left, the trump across under it.
         let deck = CGPoint(x: rect.minX + rect.width * 0.12, y: rect.minY + rect.height * 0.41)
-        let trump = TableLayout.trump(underDeckAt: deck, cardSize: size)
-        TableArt.card(Card(trumps, .nine), center: trump.position, angle: trump.rotation, renderer: renderer, context: ctx)
+        // Across under it, two thirds showing, as the table lays it.
+        let trump = CGPoint(x: deck.x + size.height * DurakLayout.trumpReach, y: deck.y)
+        TableArt.card(Card(trumps, .nine), center: trump, angle: .pi / 2, renderer: renderer, context: ctx)
         for pose in TableLayout.deck(count: 7, center: deck, cardSize: size, visibleThickness: 6) {
             TableArt.card(nil, center: pose.position, renderer: renderer, context: ctx)
         }

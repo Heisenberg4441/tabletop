@@ -53,6 +53,20 @@ struct DurakRules: Codable, Hashable, Sendable {
         self.variant = variant
     }
 
+    private enum CodingKeys: String, CodingKey { case playerCount, variant }
+
+    /// A saved game's rules are the game: a count outside 2...4 is damage,
+    /// not something to round to the nearest table, so it refuses — and the
+    /// position it came with is dropped rather than played to other rules.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let count = try c.decode(Int.self, forKey: .playerCount)
+        guard (2...4).contains(count) else {
+            throw DecodingError.dataCorruptedError(forKey: .playerCount, in: c, debugDescription: "2 to 4 players")
+        }
+        self.init(playerCount: count, variant: try c.decode(DurakVariant.self, forKey: .variant))
+    }
+
     /// Everybody refills to six after each bout while the deck lasts.
     static let handSize = 6
     /// No bout may hold more than six attacking cards...
