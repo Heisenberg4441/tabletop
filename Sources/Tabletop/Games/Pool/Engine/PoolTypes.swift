@@ -286,3 +286,25 @@ enum PoolGroup: String, Codable, Sendable, CaseIterable {
         return nil
     }
 }
+
+// MARK: - Into a y-up world
+
+/// The one conversion a y-up renderer (SceneKit) needs: the table's x stays
+/// x, its y becomes −z, its up (z) becomes y. It is a proper rotation (−90°
+/// about x), so orientations carry over by conjugation and a ball textured
+/// in scene axes turns exactly as the physics turned it.
+enum PoolFrame {
+    static let rotation = simd_quatd(angle: -Double.pi / 2, axis: SIMD3(1, 0, 0))
+
+    static func scenePosition(_ p: SIMD2<Double>, height: Double) -> SIMD3<Double> {
+        SIMD3(p.x, height, -p.y)
+    }
+
+    static func sceneVector(_ v: SIMD3<Double>) -> SIMD3<Double> {
+        SIMD3(v.x, v.z, -v.y)
+    }
+
+    static func sceneOrientation(_ q: simd_quatd) -> simd_quatd {
+        rotation * q * rotation.inverse
+    }
+}

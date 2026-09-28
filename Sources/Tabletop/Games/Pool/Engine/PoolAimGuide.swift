@@ -39,7 +39,7 @@ struct PoolAimPrediction: Sendable, Equatable {
     /// be drawn to it without running past the rail.
     var objectBallStop: SIMD2<Double>?
     /// Distance from the cue ball to `ghostBallCenter`.
-    var travel: Double
+    var travel: Double = 0
 }
 
 enum PoolAimGuide {

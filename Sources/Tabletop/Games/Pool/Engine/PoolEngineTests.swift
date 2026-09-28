@@ -97,6 +97,15 @@ enum PoolEngineTests {
                     && !g.kitchenContains(SIMD2(-1.27, 0)))
         t.check("cushion outlines are four-point polygons", g.cushionOutlines.count == 6
                     && g.cushionOutlines.allSatisfy { $0.count == 4 })
+        // The y-up frame: table up is scene up, and a turn converts to the
+        // same turn of the converted vectors.
+        let turn = simd_quatd(angle: 0.7, axis: simd_normalize(SIMD3(0.3, -0.5, 0.8)))
+        let v = SIMD3(0.2, -0.4, 0.9)
+        let viaTable = PoolFrame.sceneVector(turn.act(v))
+        let viaScene = PoolFrame.sceneOrientation(turn).act(PoolFrame.sceneVector(v))
+        t.check("the y-up frame maps table up to scene up and carries orientations over",
+                PoolFrame.sceneVector(SIMD3(0, 0, 1)) == SIMD3(0, 1, 0) && simd_distance(viaTable, viaScene) < 1e-12
+                    && PoolFrame.scenePosition(SIMD2(1, 2), height: 0.5) == SIMD3(1, 0.5, -2))
     }
 
     // MARK: Motion
@@ -413,6 +422,16 @@ enum PoolEngineTests {
                     before?.dropProgress == 0 && before?.pocket == nil && after?.dropProgress == 1 && after?.pocket != nil)
         }
         t.info("break replay: \(trajectory.keyframeCount) keyframes over \(f(trajectory.duration)) s")
+        // Printed so two runs of the binary can be compared: nothing in the
+        // engine may depend on hashing, which Swift seeds per process.
+        var layout = PoolRack.scattered(Array(0...11), seed: 64)
+        layout.update(PoolBall(number: 0, position: SIMD2(-0.9, 0.2)))
+        var hand = PoolRules.newGame(.eightBall, breaker: 1)
+        hand.isBreakShot = false
+        hand.ballInHand = .anywhere
+        let d = PoolAI.decide(table: layout, rules: hand, difficulty: .medium, seed: 3)
+        let digest = a.final.balls.reduce(0.0) { $0 + $1.position.x * Double($1.number + 1) + $1.position.y }
+        t.info("digest: break \(String(format: "%.12f", digest)), decision \(String(format: "%.12f %.12f", d.shot.aim, d.placement?.x ?? 0))")
     }
 
     // MARK: Performance

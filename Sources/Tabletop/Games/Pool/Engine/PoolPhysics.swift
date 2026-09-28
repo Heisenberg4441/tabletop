@@ -73,6 +73,30 @@ struct PoolShotResult: Sendable {
     func pocketed(_ ball: Int) -> Bool { pocketed.contains { $0.ball == ball } }
 }
 
+extension PoolShotResult {
+    /// A result from just the fields of the original interface, the rest
+    /// worked out from the events (for callers that build results by hand).
+    init(events: [PoolShotEvent], firstContact: Int?, pocketed: [(ball: Int, pocket: Int)],
+         railAfterFirstContact: Bool, final: PoolTableState, trajectory: PoolTrajectory?) {
+        var firstTime: Double?
+        var toRail = Set<Int>()
+        var kicks = 0
+        for e in events {
+            switch e {
+            case .ballBall(let a, let b, let t) where firstTime == nil && (a == 0 || b == 0): firstTime = t
+            case .cushion(let ball, _) where ball != 0: toRail.insert(ball)
+            case .cushion(0, _) where firstTime == nil: kicks += 1
+            default: break
+            }
+        }
+        self.init(events: events, firstContact: firstContact, pocketed: pocketed,
+                  railAfterFirstContact: railAfterFirstContact, final: final, trajectory: trajectory,
+                  scratched: pocketed.contains { $0.ball == 0 }, firstContactTime: firstTime,
+                  objectBallsToRail: toRail, cueCushionsBeforeContact: kicks,
+                  duration: trajectory?.duration ?? events.last?.time ?? 0)
+    }
+}
+
 // MARK: - Physics
 
 enum PoolPhysics {
@@ -682,15 +706,18 @@ struct PoolSimulator {
         }
         guard !contacts.isEmpty else { return }
 
-        // Log them in a fixed order, then solve.
+        // Log them in a fixed order, then solve. The soft phase logs and
+        // resolves its own cushion contacts, so only the pairs are logged
+        // before handing over to it.
+        let soft = needsSoftContact(contacts)
         for c in contacts {
             if c.j >= 0 {
                 note(ballBall: c.i, c.j)
-            } else {
+            } else if !soft {
                 note(cushion: c.i)
             }
         }
-        if needsSoftContact(contacts) {
+        if soft {
             runSoftPhase(contacts)
             return
         }
@@ -1117,6 +1144,7 @@ struct PoolSimulator {
     mutating func separateOverlaps(all: Bool) {
         let n = balls.count
         let hx = geo.innerHalfExtent.x - 1e-9, hy = geo.innerHalfExtent.y - 1e-9
+        if !all && !anyOverlap() { return }
         // A ball at rest is only checked once something has pushed it: a
         // push can shove it into a neighbour that is also at rest.
         var involved = balls.map { all || ($0.mode != .stationary && $0.mode != .pocketed) }
@@ -1167,6 +1195,25 @@ struct PoolSimulator {
                 involved[i] = true
             }
         }
+    }
+
+    /// A quick look, with no allocation, for anything a moving ball
+    /// overlaps: the usual answer is no, and then there is nothing to do.
+    func anyOverlap() -> Bool {
+        let n = balls.count
+        let hx = geo.innerHalfExtent.x - 1e-9, hy = geo.innerHalfExtent.y - 1e-9
+        let least = twoR - 1e-10, cushionLeast = r - 1e-10
+        for i in 0..<n where balls[i].mode != .pocketed && balls[i].mode != .stationary {
+            let p = balls[i].p
+            for j in 0..<n where j != i && balls[j].mode != .pocketed {
+                if simd_distance_squared(balls[j].p, p) < least * least { return true }
+            }
+            guard abs(p.x) >= hx || abs(p.y) >= hy else { continue }
+            for g in geo.cushions where simd_distance_squared(g.closestPoint(to: p), p) < cushionLeast * cushionLeast {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: Output

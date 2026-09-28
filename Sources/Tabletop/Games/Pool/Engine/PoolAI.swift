@@ -62,6 +62,14 @@ struct PoolAIDecision: Sendable {
     var simulations: Int
 }
 
+extension PoolAIDecision {
+    /// A decision from just a placement and a stroke (the original
+    /// interface): meant as played.
+    init(placement: SIMD2<Double>?, shot: PoolShot) {
+        self.init(placement: placement, shot: shot, planned: shot, intent: .kick, expectedValue: 0, simulations: 0)
+    }
+}
+
 enum PoolAI {
 
     struct Profile: Sendable {
@@ -82,6 +90,11 @@ enum PoolAI {
         let playsSafe: Bool
         /// Re-checks the best trials with the stroke a little off.
         let checksRobustness: Bool
+        /// How many of the best trials have their next shot searched on the
+        /// physics too, instead of judged from geometry (0: none).
+        let lookahead: Int
+        /// Plays nine-ball combinations on the 9.
+        let playsCombos: Bool
     }
 
     static func profile(_ d: PoolDifficulty) -> Profile {
@@ -90,18 +103,20 @@ enum PoolAI {
         case .easy:
             return Profile(aimError: 0.30 * degree, speedError: 0.10, tipError: 0.10, breakPower: 0.86,
                            variants: [(1.0, 0, 0), (1.35, 0, 0)], lines: 5, placements: 3, position: 0,
-                           playsSafe: false, checksRobustness: false)
+                           playsSafe: false, checksRobustness: false, lookahead: 0, playsCombos: false)
         case .medium:
             return Profile(aimError: 0.12 * degree, speedError: 0.05, tipError: 0.05, breakPower: 0.94,
                            variants: [(1.0, 0, 0), (1.0, 0, 0.55), (1.0, 0, -0.55), (1.4, 0, 0), (1.4, 0, 0.55),
                                       (1.4, 0, -0.55)],
-                           lines: 8, placements: 6, position: 0.6, playsSafe: true, checksRobustness: false)
+                           lines: 8, placements: 6, position: 0.6, playsSafe: true, checksRobustness: false,
+                           lookahead: 0, playsCombos: true)
         case .hard:
             return Profile(aimError: 0.045 * degree, speedError: 0.02, tipError: 0.02, breakPower: 1.0,
                            variants: [(0.9, 0, 0), (0.9, 0, 0.6), (0.9, 0, -0.6), (1.25, 0, 0), (1.25, 0, 0.6),
                                       (1.25, 0, -0.6), (1.25, 0.5, 0), (1.25, -0.5, 0), (1.7, 0, 0), (1.7, 0, 0.6),
                                       (1.7, 0, -0.6)],
-                           lines: 12, placements: 10, position: 1.0, playsSafe: true, checksRobustness: true)
+                           lines: 16, placements: 10, position: 1.0, playsSafe: true, checksRobustness: true,
+                           lookahead: 6, playsCombos: true)
         }
     }
 
@@ -166,6 +181,12 @@ struct PoolAILine {
     let cueTravel: Double
     let objectTravel: Double
     let probability: Double
+    /// For a combination: the ball the target is played onto, which is the
+    /// one meant to drop.
+    var carom: Int? = nil
+    /// Speed the target must leave the cue ball at (set for combinations,
+    /// which need more than the plain pot).
+    var leavingSpeed: Double? = nil
 }
 
 struct PoolAIPlanner {
@@ -185,8 +206,8 @@ struct PoolAIPlanner {
     mutating func plan(table: PoolTableState) -> PoolAIDecision {
         if rules.isBreakShot { return breakShot(table: table) }
         if let hand = rules.ballInHand { return ballInHand(hand, table: table) }
-        return best(from: table, lines: profile.lines, variants: profile.variants, safety: profile.playsSafe)
-            ?? fallback(table: table)
+        return best(from: table, lines: profile.lines, variants: profile.variants, safety: profile.playsSafe,
+                    lookahead: profile.lookahead) ?? fallback(table: table)
     }
 
     // MARK: Break
@@ -220,7 +241,9 @@ struct PoolAIPlanner {
         let legal = PoolRules.legalFirstContacts(rules, table: table)
         var spots: [(SIMD2<Double>, Double)] = []
         let r = g.ballRadius
-        for n in legal {
+        // In number order: a Set's own order changes from launch to launch,
+        // and the same table and seed must always give the same stroke.
+        for n in legal.sorted() {
             guard let ball = table.ball(n) else { continue }
             for pocket in g.pockets {
                 let toPocket = pocket.target - ball.position
@@ -258,8 +281,8 @@ struct PoolAIPlanner {
             if seen.count > profile.placements { break }
             var t = table
             place(spot, on: &t)
-            let variants = Array(profile.variants.prefix(profile.variants.count > 3 ? 6 : profile.variants.count))
-            if var d = best(from: t, lines: 3, variants: variants, safety: false) {
+            // A quick look from each spot; the chosen one gets the full search.
+            if var d = best(from: t, lines: 3, variants: Array(profile.variants.prefix(6)), safety: false) {
                 d.placement = spot
                 if d.expectedValue > (bestDecision?.expectedValue ?? -.infinity) { bestDecision = d }
             }
@@ -268,7 +291,8 @@ struct PoolAIPlanner {
             // Play the chosen spot with the full repertoire.
             var t = table
             place(spot, on: &t)
-            if let full = best(from: t, lines: profile.lines, variants: profile.variants, safety: profile.playsSafe),
+            if let full = best(from: t, lines: profile.lines, variants: profile.variants, safety: profile.playsSafe,
+                               lookahead: profile.lookahead),
                full.expectedValue >= chosen.expectedValue {
                 chosen = full
                 chosen.placement = spot
@@ -315,27 +339,47 @@ struct PoolAIPlanner {
     /// physics, a safety when nothing is likely, a kick when nothing can be
     /// hit. Nil only when there is no cue ball.
     mutating func best(from table: PoolTableState, lines count: Int,
-                       variants: [(speed: Double, side: Double, vertical: Double)], safety: Bool) -> PoolAIDecision? {
+                       variants: [(speed: Double, side: Double, vertical: Double)], safety: Bool,
+                       lookahead: Int = 0) -> PoolAIDecision? {
         guard let cue = table.cueBall, cue.pocket == nil else { return nil }
-        let candidates = lines(from: table).prefix(count)
-        var trials: [(shot: PoolShot, value: Double, line: PoolAILine)] = []
+        var candidates = Array(lines(from: table).prefix(count))
+        if profile.playsCombos && rules.mode == .nineBall {
+            candidates += combinations(from: table).prefix(3)
+        }
+        var trials: [(shot: PoolShot, value: Double, line: PoolAILine, outcome: PoolTurnOutcome)] = []
         for line in candidates {
             for v in variants {
-                let objectSpeed = objectBallSpeed(for: line) * v.speed
+                let objectSpeed = (line.leavingSpeed ?? objectBallSpeed(for: line)) * v.speed
                 let speed = strokeSpeed(for: line, objectSpeed: objectSpeed)
                 guard speed <= PoolShot.maximumSpeed * 1.02 else { continue }
                 let first = PoolShot(aim: line.aim, power: PoolShot.power(forSpeed: speed), tipSide: v.side,
                                      tipVertical: v.vertical)
                 guard let shot = refined(first, line: line, objectSpeed: objectSpeed, table: table) else { continue }
                 let result = simulate(shot, table)
-                let value = value(of: result, before: table, line: line)
-                trials.append((shot, value, line))
+                let judged = value(of: result, before: table, line: line)
+                trials.append((shot, judged.value, line, judged.outcome))
             }
         }
         trials.sort { $0.value > $1.value }
+        if lookahead > 0 {
+            // Position, properly: from where the best few leave the cue ball,
+            // search the next shot on the physics as well.
+            var looked = 0
+            for k in trials.indices where looked < lookahead && trials[k].outcome.continuesTurn
+                && trials[k].outcome.gameOver == nil {
+                looked += 1
+                var next = PoolAIPlanner(geometry: g, rules: trials[k].outcome.newState, profile: profile)
+                let quick = Array(profile.variants.prefix(3))
+                let follow = next.best(from: trials[k].outcome.table, lines: 4, variants: quick, safety: false)
+                simulations += next.simulations
+                let score = min(max(((follow?.expectedValue ?? -35) + 35) / 195, 0), 1)
+                trials[k].value = continuingValue(trials[k].outcome, result: nil, line: trials[k].line, nextShot: score)
+            }
+            trials.sort { $0.value > $1.value }
+        }
         if profile.checksRobustness {
             // A shot that only works dead on is worth less than it looks:
-            // try the best few a little off either side.
+            // try the best few a little off either side, and a little soft.
             for k in 0..<min(4, trials.count) {
                 var worst = trials[k].value
                 for (off, slower) in [(-1.3, 0.0), (1.3, 0.0), (0.0, 1.5)] {
@@ -343,7 +387,7 @@ struct PoolAIPlanner {
                     s.aim += off * profile.aimError
                     s.power = PoolShot.power(forSpeed: PoolShot.speed(forPower: s.power) * (1 - slower * profile.speedError))
                     let result = simulate(s, table)
-                    worst = min(worst, value(of: result, before: table, line: trials[k].line))
+                    worst = min(worst, value(of: result, before: table, line: trials[k].line).value)
                 }
                 trials[k].value = 0.65 * trials[k].value + 0.35 * worst
             }
@@ -351,7 +395,7 @@ struct PoolAIPlanner {
         }
         var decision = trials.first.map {
             PoolAIDecision(placement: nil, shot: $0.shot, planned: $0.shot,
-                           intent: .pot(ball: $0.line.target, pocket: $0.line.pocket),
+                           intent: .pot(ball: $0.line.carom ?? $0.line.target, pocket: $0.line.pocket),
                            expectedValue: $0.value, simulations: 0)
         }
         if safety && (decision?.expectedValue ?? -.infinity) < 35 {
@@ -424,6 +468,57 @@ struct PoolAIPlanner {
         return out.sorted { $0.probability > $1.probability }
     }
 
+    /// Nine-ball combinations on the 9: the lowest ball played onto the 9 so
+    /// the 9 drops. The cue's error is multiplied twice on the way, once at
+    /// each contact, which is why only the best few are ever tried.
+    func combinations(from table: PoolTableState) -> [PoolAILine] {
+        guard let cue = table.cueBall, cue.pocket == nil, let low = PoolRules.legalFirstContacts(rules, table: table).min(),
+              low != 9, let first = table.ball(low), let nine = table.ball(9), nine.pocket == nil else { return [] }
+        let r = g.ballRadius
+        var out: [PoolAILine] = []
+        for pocket in g.pockets {
+            let toPocket = pocket.target - nine.position
+            let nineTravel = simd_length(toPocket)
+            guard nineTravel > 1e-6 else { continue }
+            let nineDir = toPocket / nineTravel
+            guard entryAllowed(nineDir, pocket) else { continue }
+            let nineGhost = nine.position - nineDir * 2 * r
+            let toNineGhost = nineGhost - first.position
+            let firstTravel = simd_length(toNineGhost)
+            guard firstTravel > 3 * r else { continue }
+            let firstDir = toNineGhost / firstTravel
+            let secondCut = acos(min(max(simd_dot(firstDir, nineDir), -1), 1))
+            guard secondCut < 50 * Double.pi / 180 else { continue }
+            let ghost = first.position - firstDir * 2 * r
+            let toGhost = ghost - cue.position
+            let cueTravel = simd_length(toGhost)
+            guard cueTravel > 1e-6 else { continue }
+            let along = simd_dot(toGhost / cueTravel, firstDir)
+            guard along > cos(65 * Double.pi / 180) else { continue }
+            if corridorBlocked(from: cue.position, to: ghost, width: 2 * r, table: table, ignoring: [0, low]) { continue }
+            if corridorBlocked(from: first.position, to: nineGhost, width: 2 * r, table: table, ignoring: [0, low, 9]) {
+                continue
+            }
+            if corridorBlocked(from: nine.position, to: pocket.target, width: 2 * r, table: table, ignoring: [0, low, 9]) {
+                continue
+            }
+            // Error at the 9 = error at the first ball × the second contact's
+            // gain; the pocket's tolerance is the 9's.
+            let gain1 = 1 + cueTravel / (2 * r * max(along, 0.1))
+            let gain2 = 1 + firstTravel / (2 * r * max(cos(secondCut), 0.1))
+            let p = erf(tolerance(from: nine.position, into: pocket)
+                        / (gain1 * gain2 * PoolAI.effectiveAimError(profile) * 2.0.squareRoot()))
+            let roll = PoolPhysics.Parameters.standard.rollingResistance * 9.81
+            let nineSpeed = ((0.36 + 2 * roll * nineTravel) / (25.0 / 49)).squareRoot()
+            let atNine = nineSpeed / max(cos(secondCut), 0.3) / 0.98
+            let leaving = ((atNine * atNine + 2 * roll * firstTravel) / (25.0 / 49)).squareRoot()
+            out.append(PoolAILine(target: low, pocket: pocket.id, ghost: ghost, aim: atan2(toGhost.y, toGhost.x),
+                                  direction: firstDir, cut: acos(min(max(along, -1), 1)), cueTravel: cueTravel,
+                                  objectTravel: firstTravel, probability: p, carom: 9, leavingSpeed: leaving))
+        }
+        return out.sorted { $0.probability > $1.probability }
+    }
+
     /// Whether a ball arriving along `dir` can drop in this pocket at all: a
     /// corner takes anything within its right angle, a side pocket only
     /// what comes within about 55° of square.
@@ -446,28 +541,31 @@ struct PoolAIPlanner {
     }
 
     /// The chance that a stroke with this aim error pots the ball: the
-    /// pocket forgives an object-ball error of about its effective
-    /// half-width over the distance to it, and the cue's error reaches the
-    /// object ball multiplied by (1 + travel / (2R cos cut)).
+    /// pocket forgives an object-ball error of `tolerance`, and the cue's
+    /// error reaches the object ball multiplied by (1 + travel / (2R cos cut)).
     func probability(cue: SIMD2<Double>, ghost: SIMD2<Double>, target: SIMD2<Double>, pocket: PoolPocket,
                      error: Double) -> Double {
         let toPocket = pocket.target - target
-        let distance = max(simd_length(toPocket), 0.02)
-        let dir = toPocket / distance
-        let entry = acos(min(max(simd_dot(dir, pocket.axis), -1), 1))
-        let halfWidth: Double
-        if pocket.kind == .corner {
-            halfWidth = 0.029 * max(0.45, 1 - pow(entry / (60 * Double.pi / 180), 2))
-        } else {
-            halfWidth = 0.038 * max(0.05, 1 - pow(entry / (62 * Double.pi / 180), 2))
-        }
-        let tolerance = atan(halfWidth / distance)
+        let dir = toPocket / max(simd_length(toPocket), 1e-9)
         let toGhost = ghost - cue
         let travel = simd_length(toGhost)
         let cosCut = max(simd_dot(toGhost / max(travel, 1e-9), dir), 0.08)
         let gain = 1 + travel / (2 * g.ballRadius * cosCut)
-        let allowed = tolerance / gain
-        return erf(allowed / (max(error, 1e-6) * 2.0.squareRoot()))
+        return erf(tolerance(from: target, into: pocket) / gain / (max(error, 1e-6) * 2.0.squareRoot()))
+    }
+
+    /// How far off its line, as an angle, a ball leaving `from` may head and
+    /// still drop: the pocket's effective half-width (narrower the further
+    /// the ball comes from off the pocket's axis — a side pocket much more
+    /// so) over the distance.
+    func tolerance(from target: SIMD2<Double>, into pocket: PoolPocket) -> Double {
+        let toPocket = pocket.target - target
+        let distance = max(simd_length(toPocket), 0.02)
+        let entry = acos(min(max(simd_dot(toPocket / distance, pocket.axis), -1), 1))
+        let halfWidth = pocket.kind == .corner
+            ? 0.029 * max(0.45, 1 - pow(entry / (60 * Double.pi / 180), 2))
+            : 0.038 * max(0.05, 1 - pow(entry / (62 * Double.pi / 180), 2))
+        return atan(halfWidth / distance)
     }
 
     // MARK: Strokes
@@ -554,27 +652,36 @@ struct PoolAIPlanner {
     /// What a simulated shot is worth to the computer: the rules' verdict,
     /// then position (its next shot) or leave (the opponent's), weighted by
     /// how likely it is to be executed as simulated.
-    func value(of result: PoolShotResult, before: PoolTableState, line: PoolAILine?) -> Double {
+    func value(of result: PoolShotResult, before: PoolTableState, line: PoolAILine?)
+        -> (value: Double, outcome: PoolTurnOutcome) {
         let outcome = PoolRules.evaluate(result, before: before, state: rules, geometry: g)
-        if let over = outcome.gameOver { return over.winner == me ? 1000 : -1000 }
-        if outcome.foul != nil { return -160 }
-        var value: Double
+        if let over = outcome.gameOver {
+            let won = over.winner == me
+            guard won, let line else { return (won ? 1000 : -1000, outcome) }
+            // A winning line still has to be made.
+            return (line.probability * 1000 + (1 - line.probability) * -60, outcome)
+        }
+        if outcome.foul != nil { return (-160, outcome) }
         if outcome.continuesTurn {
             let next = nextShotQuality(outcome.table, outcome.newState, error: PoolAI.effectiveAimError(profile))
-            value = 100 + profile.position * 60 * next
-            // Pocketing the opponent's balls is doing their work for them.
-            if rules.mode == .eightBall, let mine = outcome.newState.group(of: me) {
-                value -= 4 * Double(result.pocketed.filter { mine.opposite.contains($0.ball) }.count)
-            }
-            if let line {
-                // The simulation is the stroke played perfectly; a real one
-                // succeeds about as often as the geometry says.
-                let p = line.probability
-                value = p * value + (1 - p) * -35
-            }
-        } else {
-            let leave = nextShotQuality(outcome.table, outcome.newState, error: PoolAI.playerAimError)
-            value = -70 * leave
+            return (continuingValue(outcome, result: result, line: line, nextShot: next), outcome)
+        }
+        let leave = nextShotQuality(outcome.table, outcome.newState, error: PoolAI.playerAimError)
+        return (-70 * leave, outcome)
+    }
+
+    /// The worth of keeping the turn with a next shot of this quality (0…1).
+    func continuingValue(_ outcome: PoolTurnOutcome, result: PoolShotResult?, line: PoolAILine?,
+                         nextShot: Double) -> Double {
+        var value = 100 + profile.position * 60 * nextShot
+        // Pocketing the opponent's balls is doing their work for them.
+        if rules.mode == .eightBall, let mine = outcome.newState.group(of: me), let result {
+            value -= 4 * Double(result.pocketed.filter { mine.opposite.contains($0.ball) }.count)
+        }
+        if let line {
+            // The simulation is the stroke played perfectly; a real one
+            // succeeds about as often as the geometry says.
+            value = line.probability * value + (1 - line.probability) * -35
         }
         return value
     }
@@ -609,7 +716,7 @@ struct PoolAIPlanner {
                     let shot = PoolShot(aim: centre + offset, power: power)
                     let result = simulate(shot, table)
                     guard result.firstContact == n else { continue }
-                    let v = value(of: result, before: table, line: nil)
+                    let v = value(of: result, before: table, line: nil).value
                     if v > (best?.expectedValue ?? -.infinity) {
                         best = PoolAIDecision(placement: nil, shot: shot, planned: shot, intent: .safety(ball: n),
                                               expectedValue: v, simulations: 0)
@@ -630,7 +737,7 @@ struct PoolAIPlanner {
             for power in [0.4, 0.58] {
                 let shot = PoolShot(aim: aim, power: power)
                 let result = simulate(shot, table)
-                let v = value(of: result, before: table, line: nil)
+                let v = value(of: result, before: table, line: nil).value
                 if v > (best?.expectedValue ?? -.infinity) {
                     best = PoolAIDecision(placement: nil, shot: shot, planned: shot, intent: .kick,
                                           expectedValue: v, simulations: 0)
