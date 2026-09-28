@@ -493,6 +493,18 @@ final class TabletopWindowController: NSWindowController, NSWindowDelegate, NSMe
         game.gameWillResignActive()
     }
 
+    // MARK: Unhandled keys
+
+    /// A key nobody wanted ends here, at the end of the window's responder
+    /// chain, and AppKit's answer to it is the system alert sound. That is a
+    /// sharp transient straight into the ear — exactly the kind of sound this
+    /// app never makes — so a stray letter on any screen is simply ignored.
+    /// Only key events are silenced; everything else keeps AppKit's behaviour.
+    override func noResponder(for eventSelector: Selector) {
+        if eventSelector == #selector(NSResponder.keyDown(with:)) { return }
+        super.noResponder(for: eventSelector)
+    }
+
     // MARK: Window delegate
 
     func windowDidBecomeKey(_ notification: Notification) { syncActivation() }

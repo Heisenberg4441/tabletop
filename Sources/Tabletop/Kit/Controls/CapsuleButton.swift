@@ -437,8 +437,24 @@ final class CapsuleButton: NSControl {
         } else {
             guard typed.subtracting(.shift) == wanted else { return false }
         }
-        return event.charactersIgnoringModifiers?.lowercased() == keyEquivalent.lowercased()
+        if event.charactersIgnoringModifiers?.lowercased() == keyEquivalent.lowercased() { return true }
+        // A letter shortcut is a key position as much as a letter. With a
+        // Cyrillic (or any non-Latin) layout active, H types "р" and would
+        // never match "h" — so a Russian player pressing H for Hit got
+        // nothing. When the typed character is not Latin, fall back to the
+        // physical key the letter lives on in the ANSI layout.
+        guard let code = Self.ansiKeyCodes[keyEquivalent.lowercased()],
+              let typedCharacter = event.charactersIgnoringModifiers?.unicodeScalars.first,
+              !typedCharacter.isASCII else { return false }
+        return event.keyCode == code
     }
+
+    /// Virtual key codes of the Latin letters on an ANSI keyboard.
+    private static let ansiKeyCodes: [String: UInt16] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
+        "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32,
+        "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46,
+    ]
 
     /// A button behind a presented options card must not answer its key: the
     /// card is modal, and Return belongs to its Start button.

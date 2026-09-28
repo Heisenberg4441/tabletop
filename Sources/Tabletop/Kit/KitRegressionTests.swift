@@ -15,6 +15,7 @@ import AppKit
 extension KitTests {
 
     static func runRegressions(_ t: TestReporter) {
+        cyrillicShortcuts(t)
         presentingAgain(t)
         banners(t)
         actionBarReserve(t)
@@ -359,4 +360,24 @@ extension KitTests {
                     && Plural.format(24, one: "%d move", other: "%d moves") == "24 moves"
                     && Plural.format(0, one: "%d move", other: "%d moves") == "0 moves")
     }
+
+    /// Letter shortcuts are key positions: with a Russian layout active, the
+    /// H key types "р", and Hit must still answer it.
+    private static func cyrillicShortcuts(_ t: TestReporter) {
+        t.section("Letter shortcuts on a Cyrillic layout")
+        func key(_ characters: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags = []) -> NSEvent? {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                             windowNumber: 0, context: nil, characters: characters,
+                             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+        }
+        let hit = CapsuleButton(title: "Hit")
+        hit.keyEquivalent = "h"
+        t.check("H on a Latin layout", key("h", 4).map(hit.matchesKeyEquivalent) == true)
+        t.check("the same key on a Russian layout (р)", key("р", 4).map(hit.matchesKeyEquivalent) == true)
+        t.check("another Cyrillic key does not", key("о", 38).map(hit.matchesKeyEquivalent) == false)
+        t.check("a Latin letter on the H key position (Dvorak d) does not",
+                key("d", 4).map(hit.matchesKeyEquivalent) == false)
+        t.check("⌘р is not a bare H", key("р", 4, .command).map(hit.matchesKeyEquivalent) == false)
+    }
 }
+

@@ -2,6 +2,66 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>%d balls</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d шара</string>
+			<key>many</key>
+			<string>%d шаров</string>
+			<key>one</key>
+			<string>%d шар</string>
+			<key>other</key>
+			<string>%d шара</string>
+		</dict>
+	</dict>
+	<key>%d balls potted</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d шара забито</string>
+			<key>many</key>
+			<string>%d шаров забито</string>
+			<key>one</key>
+			<string>%d шар забит</string>
+			<key>other</key>
+			<string>%d шара забито</string>
+		</dict>
+	</dict>
+	<key>%d cards</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d карты</string>
+			<key>many</key>
+			<string>%d карт</string>
+			<key>one</key>
+			<string>%d карта</string>
+			<key>other</key>
+			<string>%d карты</string>
+		</dict>
+	</dict>
 	<key>%d cards face down</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
@@ -20,6 +80,26 @@
 			<string>%d карта рубашкой вверх</string>
 			<key>other</key>
 			<string>%d карты рубашкой вверх</string>
+		</dict>
+	</dict>
+	<key>%d cards left in the deck</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>В колоде осталось %d карты</string>
+			<key>many</key>
+			<string>В колоде осталось %d карт</string>
+			<key>one</key>
+			<string>В колоде осталась %d карта</string>
+			<key>other</key>
+			<string>В колоде осталось %d карты</string>
 		</dict>
 	</dict>
 	<key>%d decks</key>
@@ -42,6 +122,66 @@
 			<string>%d колоды</string>
 		</dict>
 	</dict>
+	<key>%d draws</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d ничьи</string>
+			<key>many</key>
+			<string>%d ничьих</string>
+			<key>one</key>
+			<string>%d ничья</string>
+			<key>other</key>
+			<string>%d ничьи</string>
+		</dict>
+	</dict>
+	<key>%d games</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d партии</string>
+			<key>many</key>
+			<string>%d партий</string>
+			<key>one</key>
+			<string>%d партия</string>
+			<key>other</key>
+			<string>%d партии</string>
+		</dict>
+	</dict>
+	<key>%d hands</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d раздачи</string>
+			<key>many</key>
+			<string>%d раздач</string>
+			<key>one</key>
+			<string>%d раздача</string>
+			<key>other</key>
+			<string>%d раздачи</string>
+		</dict>
+	</dict>
 	<key>%d moves</key>
 	<dict>
 		<key>NSStringLocalizedFormatKey</key>
@@ -60,6 +200,106 @@
 			<string>%d ход</string>
 			<key>other</key>
 			<string>%d хода</string>
+		</dict>
+	</dict>
+	<key>%d players</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d игрока</string>
+			<key>many</key>
+			<string>%d игроков</string>
+			<key>one</key>
+			<string>%d игрок</string>
+			<key>other</key>
+			<string>%d игрока</string>
+		</dict>
+	</dict>
+	<key>%d shots</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d удара</string>
+			<key>many</key>
+			<string>%d ударов</string>
+			<key>one</key>
+			<string>%d удар</string>
+			<key>other</key>
+			<string>%d удара</string>
+		</dict>
+	</dict>
+	<key>%d wins</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>%d победы</string>
+			<key>many</key>
+			<string>%d побед</string>
+			<key>one</key>
+			<string>%d победа</string>
+			<key>other</key>
+			<string>%d победы</string>
+		</dict>
+	</dict>
+	<key>Deck, %d cards</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>Колода, %d карты</string>
+			<key>many</key>
+			<string>Колода, %d карт</string>
+			<key>one</key>
+			<string>Колода, %d карта</string>
+			<key>other</key>
+			<string>Колода, %d карты</string>
+		</dict>
+	</dict>
+	<key>Next level in %d hands</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>d</string>
+			<key>few</key>
+			<string>Повышение через %d раздачи</string>
+			<key>many</key>
+			<string>Повышение через %d раздач</string>
+			<key>one</key>
+			<string>Повышение через %d раздачу</string>
+			<key>other</key>
+			<string>Повышение через %d раздачи</string>
 		</dict>
 	</dict>
 </dict>
