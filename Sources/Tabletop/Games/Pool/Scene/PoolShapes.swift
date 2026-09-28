@@ -158,8 +158,6 @@ enum PoolShapes {
         }
     }
 
-    static func cushionPolygons(_ d: PoolTableDimensions) -> [[Point]] { cushionRuns(d).map(\.polygon) }
-
     /// The hole in the bed under a pocket: the pocket's opening, stopped a
     /// hair short of the mouth so no part of the hole lies on the playing
     /// surface.

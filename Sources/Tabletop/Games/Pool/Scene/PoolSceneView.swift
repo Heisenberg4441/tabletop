@@ -26,7 +26,6 @@ protocol PoolSceneViewInput: AnyObject {
     func poolMagnify(_ event: NSEvent)
     func poolKeyDown(_ event: NSEvent) -> Bool
     func poolKeyUp(_ event: NSEvent) -> Bool
-    func poolFlagsChanged(_ event: NSEvent)
 }
 
 final class PoolSceneView: SCNView {
@@ -76,11 +75,6 @@ final class PoolSceneView: SCNView {
 
     override func keyUp(with event: NSEvent) {
         if input?.poolKeyUp(event) != true { super.keyUp(with: event) }
-    }
-
-    override func flagsChanged(with event: NSEvent) {
-        input?.poolFlagsChanged(event)
-        super.flagsChanged(with: event)
     }
 
     // MARK: Where the pointer is on the cloth

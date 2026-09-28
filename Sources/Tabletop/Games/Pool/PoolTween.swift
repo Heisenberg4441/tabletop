@@ -53,5 +53,4 @@ final class PoolTween {
     static func easeInOut(_ t: Double) -> Double { t * t * (3 - 2 * t) }
     static func easeOut(_ t: Double) -> Double { 1 - pow(1 - t, 3) }
     static func easeIn(_ t: Double) -> Double { t * t * t }
-    static func linear(_ t: Double) -> Double { t }
 }

@@ -11,9 +11,16 @@
 //                           out, the rules' verdict, the computer's turn
 //    PoolGame+Presentation  the camera, the cue and the guides, the HUD
 //    PoolGame+Input         the mouse and the keyboard
+//    PoolMatch              the game as data, the save and the statistics
+//    PoolEngineText         the engine's verdicts in words
+//    PoolScenarios          the tables `--shot pool` photographs
+//    Scene/                 the SceneKit room: table, balls, cue, guides,
+//                           camera rig, textures, the view and its clock
+//    HUD/                   the power meter, the spin control, the players
 //
 //  The engine (Engine/) is authoritative about everything on the cloth; the
-//  game only asks it what happens and shows it.
+//  game only asks it what happens and shows it. Nothing here imports it
+//  beyond its published API, and nothing in it imports AppKit or SceneKit.
 //
 
 import AppKit
@@ -242,7 +249,8 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         powerMeter.armedPower = armedPower
         // Nothing scheduled may run before the game is actually in front:
         // the scheduler starts held, and `gameDidBecomeActive` lets it go.
-        if !runsSynchronously { scheduler.suspend() }
+        if !runsSynchronously && !isActive { scheduler.suspend() }
+        clock.isAllowed = isActive && !runsSynchronously
         resumeTurn()
     }
 

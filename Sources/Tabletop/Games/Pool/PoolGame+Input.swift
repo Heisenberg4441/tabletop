@@ -127,8 +127,6 @@ extension PoolGame: PoolSceneViewInput {
         return true
     }
 
-    func poolFlagsChanged(_ event: NSEvent) {}
-
     // MARK: Helpers
 
     private func isOverCueBall(_ point: CGPoint) -> Bool {
