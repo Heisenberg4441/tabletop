@@ -116,6 +116,16 @@ enum PoolTests {
     // MARK: Textures and camera
 
     private static func textures(_ t: TestReporter) {
+        // The first table of a session makes every texture; later ones share them.
+        let started = Date()
+        let first = PoolTableScene(cloth: .green)
+        let made = Date().timeIntervalSince(started)
+        let again = Date()
+        _ = PoolTableScene(cloth: .green)
+        t.info(String(format: "building the table: %.0f ms the first time, %.0f ms after", made * 1000,
+                      Date().timeIntervalSince(again) * 1000))
+        t.check("the table has sixteen balls, a cue and a camera",
+                first.balls.count == 16 && first.cameraNode.camera != nil && first.cue.length > 1.4)
         guard let image = PoolMaterials.ballImage(11) else { t.check("ball textures are made", false); return }
         t.check("a ball's skin is 2:1 for a sphere (\(image.width)×\(image.height))", image.width == 2 * image.height)
         let pole = pixel(image, image.width / 8, 4)

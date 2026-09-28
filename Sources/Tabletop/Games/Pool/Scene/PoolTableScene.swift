@@ -35,6 +35,9 @@ final class PoolTableScene {
     /// The cue ball's translucent stand-in while it is dragged somewhere it
     /// may not go.
     let placementGhost: SCNNode
+    /// A ring on the cloth under the cue ball while it is carried somewhere
+    /// it may go.
+    let placementRing: SCNNode
 
     private var bedMaterial: SCNMaterial
     private var cushionMaterial: SCNMaterial
@@ -57,6 +60,13 @@ final class PoolTableScene {
         placementGhost = SCNNode(geometry: ghostSphere)
         placementGhost.isHidden = true
         placementGhost.castsShadow = false
+        let ring = SCNTube(innerRadius: CGFloat(geometry.ballRadius * 1.25), outerRadius: CGFloat(geometry.ballRadius * 1.25 + 0.0018),
+                           height: 0.0003)
+        ring.radialSegmentCount = 64
+        ring.materials = [PoolMaterials.guide(Palette.positive, alpha: 0.8)]
+        placementRing = SCNNode(geometry: ring)
+        placementRing.isHidden = true
+        placementRing.castsShadow = false
 
         scene.background.contents = Palette.room
         buildRoom()
@@ -68,6 +78,7 @@ final class PoolTableScene {
         scene.rootNode.addChildNode(cue.node)
         scene.rootNode.addChildNode(guides.node)
         scene.rootNode.addChildNode(placementGhost)
+        scene.rootNode.addChildNode(placementRing)
         applyEnvironment()
     }
 

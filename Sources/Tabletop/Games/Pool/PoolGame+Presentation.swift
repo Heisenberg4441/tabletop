@@ -86,7 +86,11 @@ extension PoolGame {
         switch phase {
         case .thinking: return watchPose()
         case .over: return topPose()
-        case .rolling, .striking: return rig.goal
+        case .rolling, .striking:
+            if let playback, let trajectory = playback.result.trajectory {
+                return shotPose(for: trajectory, from: Self.firstContactTime(playback.result))
+            }
+            return rig.goal
         default: return aimPose()
         }
     }

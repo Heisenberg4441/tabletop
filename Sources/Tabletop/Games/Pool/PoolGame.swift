@@ -166,8 +166,8 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
             match = saved.match
             aim = saved.aim
         } else {
-            match = PoolMatch.start(options, seed: Self.freshSeed(), breaker: PoolSeat.you,
-                                    opponentName: Self.opponentName(seed: 1))
+            let seed = Self.freshSeed()
+            match = PoolMatch.start(options, seed: seed, breaker: PoolSeat.you, opponentName: Self.opponentName(seed: seed))
         }
         super.init(nibName: nil, bundle: nil)
     }
@@ -195,6 +195,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         sceneView = PoolSceneView(scene: table.scene)
         sceneView.pointOfView = table.cameraNode
         sceneView.input = self
+        // Upload the textures and geometry in the background now, so the
+        // first frame the player sees does not wait for them.
+        if !TabletopEnvironment.isHarness { sceneView.prepare([table.scene], completionHandler: nil) }
         root.addSubview(sceneView)
         root.addSubview(vignette)
 
@@ -237,6 +240,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
 
         table.apply(table: match.table)
         powerMeter.armedPower = armedPower
+        // Nothing scheduled may run before the game is actually in front:
+        // the scheduler starts held, and `gameDidBecomeActive` lets it go.
+        if !runsSynchronously { scheduler.suspend() }
         resumeTurn()
     }
 
@@ -335,7 +341,8 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
                                        other: NSLocalizedString("%d games", comment: "pool statistics, games"))
             let won = Plural.format(wins, one: NSLocalizedString("%d win", comment: "pool statistics, one win"),
                                     other: NSLocalizedString("%d wins", comment: "pool statistics, wins"))
-            lines.append("\(PoolEngineText.difficulty(difficulty)): \(played), \(won)")
+            lines.append(String(format: NSLocalizedString("%1$@: %2$@, %3$@", comment: "pool statistics: difficulty: games, wins"),
+                                PoolEngineText.difficulty(difficulty), played, won))
         }
         let run = Plural.format(statistics.bestRun, one: NSLocalizedString("%d ball", comment: "pool: one ball"),
                                 other: NSLocalizedString("%d balls", comment: "pool: balls"))

@@ -20,6 +20,10 @@ extension PoolGame: PoolSceneViewInput {
         if playerHasBallInHand, isOverCueBall(point) {
             drag = .placing
             dragValidSpot = match.table.cueBall?.position
+            if let spot = dragValidSpot {
+                table.placementRing.isHidden = false
+                table.placementRing.simdPosition = PoolSpace.sceneSIMD(spot, height: 0.0008)
+            }
             hideBallInHandBadge()
             refreshAim()
             requestFrames()
@@ -60,6 +64,7 @@ extension PoolGame: PoolSceneViewInput {
         drag = .none
         if was == .placing {
             table.placementGhost.isHidden = true
+            table.placementRing.isHidden = true
             if let spot = dragValidSpot { moveCueBall(to: spot) }
             dragValidSpot = nil
             if viewMode == .aim { setCamera(aimPose(), animated: true) }
@@ -158,9 +163,12 @@ extension PoolGame: PoolSceneViewInput {
             dragValidSpot = clamped
             table.placementGhost.isHidden = true
             moveCueBall(to: clamped)
+            table.placementRing.isHidden = false
+            table.placementRing.simdPosition = PoolSpace.sceneSIMD(clamped, height: 0.0008)
         } else {
             table.placementGhost.isHidden = false
             table.placementGhost.simdPosition = PoolSpace.sceneSIMD(clamped, height: R)
+            table.placementRing.isHidden = true
         }
         redraw()
     }

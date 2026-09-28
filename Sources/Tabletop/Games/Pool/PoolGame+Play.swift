@@ -249,6 +249,7 @@ extension PoolGame {
         guides(hidden: true)
         table.kitchen.isHidden = true
         table.placementGhost.isHidden = true
+        table.placementRing.isHidden = true
         hideBallInHandBadge()
         refreshHUD()
         pendingResult = nil

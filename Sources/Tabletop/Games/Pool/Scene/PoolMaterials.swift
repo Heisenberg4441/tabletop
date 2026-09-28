@@ -50,10 +50,10 @@ enum PoolMaterials {
     /// is: green, blue, a deep red for burgundy, a grey for slate.
     static func clothColor(_ table: TableColor) -> SIMD3<Double> {
         switch table {
-        case .green: return [0.055, 0.300, 0.150]
-        case .blue: return [0.045, 0.200, 0.400]
-        case .burgundy: return [0.360, 0.060, 0.080]
-        case .slate: return [0.180, 0.195, 0.220]
+        case .green: return [0.030, 0.300, 0.130]
+        case .blue: return [0.000, 0.125, 0.360]
+        case .burgundy: return [0.300, 0.000, 0.018]
+        case .slate: return [0.105, 0.115, 0.132]
         }
     }
 
