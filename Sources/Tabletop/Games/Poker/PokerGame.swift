@@ -246,7 +246,16 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
     func flowDidChangeState(_ flow: PokerFlow) {
         panel.update(animated: true)
         publishStatus()
+        // VoiceOver hears when the table is waiting for the player.
+        let humanTurn = flow.stage == .humanTurn
+        if humanTurn && !wasHumanTurn {
+            NSAccessibility.post(element: tableView, notification: .announcementRequested,
+                                 userInfo: [.announcement: NSLocalizedString("Your turn", comment: "accessibility: the player's turn to act"),
+                                            .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
+        wasHumanTurn = humanTurn
     }
+    private var wasHumanTurn = false
 
     func flow(_ flow: PokerFlow, didFinishHand summary: PokerHandSummary) {
         let table = flow.table
@@ -281,7 +290,9 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
                                   one: NSLocalizedString("%d hand", comment: "poker banner: hands played, one"),
                                   other: NSLocalizedString("%d hands", comment: "poker banner: hands played, many"))
         let config = table.config
-        Banner.show(in: tableView, title: title, subtitle: "\(players) · \(hands)",
+        let subtitle = String(format: NSLocalizedString("%1$@ · %2$@", comment: "poker banner: players · hands, e.g. 6 players · 68 hands"),
+                              players, hands)
+        Banner.show(in: tableView, title: title, subtitle: subtitle,
                     symbolName: place == 1 ? "trophy.fill" : "flag.checkered",
                     tone: place == 1 ? .win : .neutral,
                     actions: [
@@ -380,6 +391,13 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
 
     @objc func topUp(_ sender: Any?) {
         flow.topUp()
+        // Asked for in the middle of a hand, it waits for the hand's end.
+        if flow.pendingTopUp {
+            Toast.show(String(format: NSLocalizedString("You’ll top up to %@ before the next hand",
+                                                        comment: "poker toast: a top-up waits for the hand to end"),
+                              Chips.format(PokerTableConfig.cashStack)),
+                       symbolName: "plus.circle", in: tableView, placement: .top)
+        }
     }
 
     @objc func toggleFastOpponents(_ sender: Any?) {

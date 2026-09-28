@@ -91,11 +91,13 @@ extension PokerTableView {
         for event in events {
             switch event {
             case .blindsRaised(_, let blinds):
+                // Said in the middle of the table: a new hand is starting,
+                // and the middle is the one place with nothing on it yet.
                 at(t) { view in
                     Toast.show(String(format: NSLocalizedString("Blinds up · %1$@/%2$@",
                                                                 comment: "poker toast: the blinds rise, e.g. Blinds up · 25/50"),
                                       Chips.format(blinds.smallBlind), Chips.format(blinds.bigBlind)),
-                               symbolName: "arrow.up.circle", in: view, placement: .top, duration: 2.4)
+                               symbolName: "arrow.up.circle", in: view, placement: .center, duration: 2.4)
                 }
 
             case .rebought(let seat, let amount):
@@ -108,7 +110,7 @@ extension PokerTableView {
                     if table.players[safe: seat]?.isHuman == true {
                         Toast.show(String(format: NSLocalizedString("You bought in for %@", comment: "poker toast: the player topped up"),
                                           Chips.format(amount)),
-                                   symbolName: "plus.circle", in: view, placement: .top, duration: 2.2)
+                                   symbolName: "plus.circle", in: view, placement: .center, duration: 2.2)
                     }
                 }
 
