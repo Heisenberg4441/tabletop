@@ -339,13 +339,19 @@ final class BlackjackTableView: CardTableView {
 
     private func apply(previous: BlackjackScene, animated: Bool, chipOrigin: CGPoint?) {
         let animate = animated && Motion.isEnabled && window != nil
+        // The card sounds follow the cards, not the animation: under Reduce
+        // Motion a card still goes from the shoe to the hand. (Never for a
+        // relayout, where nothing moved at all.)
+        let audible = animated && window != nil
         let layout = layout(for: scene)
 
         // Cards that have left the scene are swept into the discard holder,
         // turning face down on the way.
         var swept = 0
+        var collected = 0
         for id in spriteIDs.sorted() where id < Self.transientBase && layout.cards[id] == nil && !sweeping.contains(id) {
             pendingFlips.remove(id)
+            collected += 1
             guard animate else {
                 remove(id)
                 continue
@@ -360,7 +366,7 @@ final class BlackjackTableView: CardTableView {
             }
             swept += 1
         }
-        if swept > 0 { Sound.play(.slide) }
+        if collected > 0 && audible { Sound.play(.slide) }
 
         // Cards new to the scene come out of the shoe, land face down, and
         // turn over where they lie; the rest move to where they now belong.
@@ -375,8 +381,8 @@ final class BlackjackTableView: CardTableView {
             guard existingSprite(id) != nil else {
                 sprite(id: id, card: spec.card)
                 place(id, pose: shoeLayer.dealPose, faceUp: false, duration: 0)
+                if audible { Sound.play(.deal) }
                 if animate {
-                    Sound.play(.deal)
                     let delay = Double(dealt) * Motion.dealStagger
                     dealt += 1
                     if spec.faceUp { pendingFlips.insert(id) }
@@ -395,15 +401,16 @@ final class BlackjackTableView: CardTableView {
             let turning = isFaceUp(id) != spec.faceUp && !pendingFlips.contains(id)
             if !animate { pendingFlips.remove(id) }
             guard moved || turning || !animate else { continue }
-            if turning && animate { Sound.play(.flip) }
+            if turning && audible { Sound.play(.flip) }
             let faceUp = pendingFlips.contains(id) ? isFaceUp(id) : spec.faceUp
             place(id, pose: spec.pose, faceUp: animate ? faceUp : spec.faceUp,
                   duration: animate ? (turning && !moved ? Motion.cardFlip * 1.5 : Motion.cardMove) : 0)
         }
 
         // A fresh shoe: a few backs fly from the tray into the shoe.
-        if animate && previous.discardCount > 0 && scene.discardCount == 0 && scene.shoeRemaining >= 0.999 {
-            Sound.play(.shuffle)
+        let shuffled = previous.discardCount > 0 && scene.discardCount == 0 && scene.shoeRemaining >= 0.999
+        if shuffled && audible { Sound.play(.shuffle) }
+        if animate && shuffled {
             let from = discardLayer.landingPose
             for k in 0..<6 {
                 let id = Self.transientBase + k

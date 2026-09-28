@@ -59,12 +59,13 @@ enum BlackjackPlayTest {
         var insurances = 0
         var shuffles = 0
         var viaKeys = 0
+        var collectedOK = true
         var problems: [String] = []
 
         func verify(_ moment: String) {
             let engine = game.engine
             if !engine.isBalanced { balanced = false; problems.append("unbalanced \(moment)") }
-            let scene = BlackjackScene(engine: engine)
+            let scene = game.currentScene
             if table.scene != scene { sceneMatches = false; problems.append("stale scene \(moment)") }
             let cards = engine.round?.cardsOnTable.count ?? 0
             if table.sceneSpriteCount != cards { sceneMatches = false; problems.append("\(table.sceneSpriteCount) sprites for \(cards) cards \(moment)") }
@@ -141,12 +142,20 @@ enum BlackjackPlayTest {
             if game.engine.phase != .settled { problems.append("round \(n) stuck in \(game.engine.phase)") }
             rounds += 1
             verify("settled")
+            // The payout's beat has passed (the scheduler runs at once here):
+            // the winnings are back with the player, and the pill says so.
+            let pill = TopBarStatus.items(for: .blackjack).first { $0.id == "bankroll" }?.text ?? ""
+            if game.currentScene.chipsOnCloth != 0 || !pill.contains(Chips.format(game.engine.bankroll)) {
+                collectedOK = false
+                problems.append("round \(n): \(game.currentScene.chipsOnCloth) left on the cloth, pill '\(pill)'")
+            }
         }
         t.check("\(rounds) rounds played through the table's own controls (\(viaKeys) by key)",
                 rounds == 80 && !problems.contains { $0.contains("stuck") })
         t.check("every chip accounted for after every click and every dealer's step", balanced)
         t.check("the cloth shows exactly the engine's cards and chips at every step", sceneMatches)
         t.check("every hand's capsule says what the hand is", labelsMatch)
+        t.check("a beat after the payout the winnings are back with the player, and the bankroll pill says so", collectedOK)
         t.check("the bar offers exactly the legal plays", barMatches)
         t.check("splits, insurance and reshuffles all came up (\(splits), \(insurances), \(shuffles))",
                 splits >= 3 && insurances >= 2 && shuffles > 0)

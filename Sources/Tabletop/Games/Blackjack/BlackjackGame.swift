@@ -78,6 +78,9 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
     /// The chips in the circle, in the order they went on, for taking the
     /// last one back.
     private var betChips: [Int] = []
+    /// A settled round's winnings have gone from the circle to the player.
+    private var chipsCollected = false
+    private var collectToken: TableScheduler.Token?
     /// The play the Hint button lit, until the player acts.
     private(set) var hinted: BlackjackAction?
     private var insurancePrompt: BlackjackPrompt?
@@ -127,7 +130,9 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         // Nothing runs until the game is in front.
         if !table.scheduler.isImmediate { table.scheduler.suspend() }
         betChips = Self.chips(for: engine.pendingBet)
-        table.resetTable(to: BlackjackScene(engine: engine))
+        // A round restored settled has long since paid out.
+        chipsCollected = engine.phase == .settled
+        table.resetTable(to: currentScene)
         refreshChrome(animated: false)
     }
 
@@ -165,7 +170,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
 
     /// Puts a chip in the circle — collecting a finished round first.
     func pickChip(_ value: Int) {
-        guard beginBetting(), engine.addToBet(value) else { return }
+        guard confirmBanner == nil, beginBetting(), engine.addToBet(value) else { return }
         hideTransientPrompts()
         betChips.append(value)
         var origin: CGPoint?
@@ -206,7 +211,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
 
     /// Deals the bet in the circle — or, on an empty circle, the last bet.
     func deal() {
-        guard beginBetting() else { return }
+        guard confirmBanner == nil, beginBetting() else { return }
         if engine.pendingBet == 0 && engine.canRebet {
             engine.rebet()
         }
@@ -217,6 +222,9 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         betChips = []
         hinted = nil
         hideTransientPrompts()
+        // Saved as dealt: a round interrupted by anything short of a quit
+        // resumes from its first card, on the same cards.
+        save()
         render()
         pump()
     }
@@ -245,6 +253,9 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
     }
 
     private func collectRound() {
+        if let collectToken { table.scheduler.cancel(collectToken) }
+        collectToken = nil
+        chipsCollected = false
         let shuffled = engine.collect()
         betChips = []
         render()
@@ -339,6 +350,16 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
             statistics.record(round, bankroll: engine.bankroll)
             statistics.save()
             save()
+            // The payout lands in the circle; a beat later the chips slide
+            // to the player. The cards and the results stay until the next
+            // bet.
+            chipsCollected = false
+            collectToken = table.scheduler.after(1.3) { [weak self] in
+                guard let self, self.engine.phase == .settled else { return }
+                self.collectToken = nil
+                self.chipsCollected = true
+                self.render()
+            }
         }
         render()
         pump()
@@ -361,9 +382,12 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
 
     // MARK: Drawing
 
+    /// What the table should be showing now.
+    var currentScene: BlackjackScene { BlackjackScene(engine: engine, chipsCollected: chipsCollected) }
+
     private func render(chipOrigin: CGPoint? = nil, animated: Bool = true) {
         guard isViewLoaded else { return }
-        table.show(BlackjackScene(engine: engine), animated: animated, chipOrigin: chipOrigin)
+        table.show(currentScene, animated: animated, chipOrigin: chipOrigin)
         refreshChrome(animated: animated)
     }
 
@@ -373,22 +397,24 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         let animated = animated && table.window != nil
         let phase = engine.phase
         let bar = table.bar
+        // While a confirmation is asking, its Return is the only Return.
+        let asking = confirmBanner != nil
         var actions: [ChromeAction] = []
         switch phase {
         case .betting, .settled:
             if bar.leadingAccessory !== table.rack { bar.leadingAccessory = table.rack }
             if bar.trailingAccessory != nil { bar.trailingAccessory = nil }
             table.rack.available = phase == .settled ? min(engine.rules.maximumBet, engine.bankroll) : engine.betHeadroom
-            table.rack.isEnabled = !engine.isBroke
+            table.rack.isEnabled = !engine.isBroke && !asking
             actions = [
                 ChromeAction(id: "clear", title: NSLocalizedString("Clear", comment: "blackjack: take the bet back"),
-                             keyEquivalent: "\u{7f}", isEnabled: phase == .betting && engine.pendingBet > 0) { [weak self] in
+                             keyEquivalent: "\u{7f}", isEnabled: phase == .betting && engine.pendingBet > 0 && !asking) { [weak self] in
                     self?.clearBet()
                 },
                 ChromeAction(id: "rebet", title: NSLocalizedString("Rebet", comment: "blackjack: bet the last bet again"),
-                             keyEquivalent: "b", isEnabled: engine.canRebet) { [weak self] in self?.rebet() },
+                             keyEquivalent: "b", isEnabled: engine.canRebet && !asking) { [weak self] in self?.rebet() },
                 ChromeAction(id: "deal", title: NSLocalizedString("Deal", comment: "blackjack: deal the hand"),
-                             style: .primary, keyEquivalent: "\r", isEnabled: canDealNow) { [weak self] in self?.deal() },
+                             style: .primary, keyEquivalent: "\r", isEnabled: canDealNow && !asking) { [weak self] in self?.deal() },
             ]
         default:
             if bar.leadingAccessory != nil { bar.leadingAccessory = nil }
@@ -416,7 +442,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         let scene = table.scene
         // Winnings still lying in the circle are not in front of the player
         // yet; they join the bankroll when they are collected.
-        let uncollected = engine.phase == .settled ? scene.chipsOnCloth
+        let uncollected = engine.phase == .settled ? (chipsCollected ? 0 : scene.chipsOnCloth)
             : (engine.round?.insuranceReturned ?? 0) > 0 ? (engine.round?.insuranceReturned ?? 0) : 0
         let bankroll = max(0, engine.bankroll - uncollected)
         var items = [StatusPillItem(id: "bankroll",
@@ -488,7 +514,8 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
     }
 
     private func hideTransientPrompts() {
-        confirmBanner?.dismiss(notify: false)
+        guard let banner = confirmBanner else { return }
+        banner.dismiss(notify: false)
         confirmBanner = nil
     }
 
@@ -637,8 +664,10 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         hinted = nil
         betChips = []
         engine.startShoe(rules: rules, seed: Self.seed(forShoe: shoesStarted))
+        chipsCollected = false
+        collectToken = nil
         table.dealerRule = rules.dealerRuleText
-        table.resetTable(to: BlackjackScene(engine: engine))
+        table.resetTable(to: currentScene)
         refreshChrome(animated: false)
         save()
         Toast.show(String(format: NSLocalizedString("%@ · a fresh shoe", comment: "blackjack: e.g. 6 decks · a fresh shoe"),
@@ -658,6 +687,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
             actions: [
                 ChromeAction(id: "cancel", title: NSLocalizedString("Cancel", comment: ""), keyEquivalent: "\u{1b}") { [weak self] in
                     self?.confirmBanner = nil
+                    self?.refreshChrome()
                 },
                 ChromeAction(id: "confirm", title: NSLocalizedString("Reset", comment: "blackjack: reset the bankroll"),
                              style: .destructiveProminent, keyEquivalent: "\r") { [weak self] in
@@ -665,6 +695,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
                     self?.resetBankroll()
                 },
             ], verticalPosition: table.promptPosition)
+        refreshChrome()
     }
 
     func resetBankroll() {
@@ -678,7 +709,7 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
 
     // MARK: Screenshots
 
-    static var screenshotScenarios: [String] { ["betting", "decision", "split", "insurance", "settled", "new-game"] }
+    static var screenshotScenarios: [String] { ["betting", "decision", "split", "insurance", "settled", "new-game", "cut-card"] }
 
     func prepareForScreenshot(scenario: String?) {
         loadViewIfNeeded()
@@ -696,8 +727,11 @@ final class BlackjackGame: NSViewController, TabletopGame, NSMenuItemValidation 
         self.engine = engine
         self.coach = coach
         betChips = Self.chips(for: engine.pendingBet)
+        // Photographed the moment the payout lands, before it is collected.
+        chipsCollected = false
+        collectToken = nil
         table.dealerRule = engine.rules.dealerRuleText
-        table.resetTable(to: BlackjackScene(engine: engine))
+        table.resetTable(to: currentScene)
         refreshChrome(animated: false)
     }
 

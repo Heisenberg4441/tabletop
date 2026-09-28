@@ -60,7 +60,10 @@ struct BlackjackScene: Equatable {
 
     init() {}
 
-    init(engine: BlackjackEngine) {
+    /// The scene for `engine`. `chipsCollected`: a settled round's winnings
+    /// have already gone back to the player's chips, leaving the cards and
+    /// the results on the cloth.
+    init(engine: BlackjackEngine, chipsCollected: Bool = false) {
         let shoe = engine.shoe
         shoeRemaining = shoe.remainingFraction
         cutFraction = shoe.cutFraction
@@ -120,6 +123,11 @@ struct BlackjackScene: Equatable {
                 stacks[.bet(i)] = StackAmount(amount: hand.bet)
             }
             hands.append(shown)
+        }
+
+        if round.phase == .settled && chipsCollected {
+            for key in stacks.keys { stacks[key] = StackAmount(amount: 0) }
+            return
         }
 
         if round.insurance > 0 {

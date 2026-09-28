@@ -218,22 +218,22 @@ final class BlackjackShoeLayer: CALayer {
         ctx.strokePath()
     }
 
-    /// The cut card once it has come out: lying on the cloth below the
-    /// mouth, where the dealer set it down.
+    /// The cut card once it has come out: tucked half under the shoe where
+    /// the dealer set it down, a strip of yellow showing.
     private static func drawCutCard(_ ctx: CGContext, cardSize: CGSize) {
         let b = bodySize(cardSize)
         ctx.saveGState()
-        ctx.translateBy(x: -b.width * 0.22, y: b.height * 0.5 + cardSize.width * 0.38)
-        ctx.rotate(by: 0.12)
+        ctx.translateBy(x: -b.width * 0.10, y: b.height * 0.5 - cardSize.width * 0.04)
+        ctx.rotate(by: 0.09)
         let rect = CGRect(x: -cardSize.height / 2, y: -cardSize.width * 0.36, width: cardSize.height, height: cardSize.width * 0.72)
         let path = ContinuousShape.roundedRect(rect, radius: cardSize.width * 0.07)
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: 1.5), blur: 3, color: NSColor(white: 0, alpha: 0.45).cgColor)
         ctx.addPath(path)
-        ctx.setFillColor(NSColor(srgbRed: 0.96, green: 0.78, blue: 0.20, alpha: 1).cgColor)
+        ctx.setFillColor(NSColor(srgbRed: 0.90, green: 0.74, blue: 0.26, alpha: 1).cgColor)
         ctx.fillPath()
         ctx.restoreGState()
-        AppleStyle.gloss(path, in: rect, context: ctx, strength: 1.4)
+        AppleStyle.gloss(path, in: rect, context: ctx, strength: 1.2)
         AppleStyle.bevel(path, in: rect, context: ctx, width: 1, top: NSColor(white: 1, alpha: 0.45),
                          bottom: NSColor(srgbRed: 0.5, green: 0.35, blue: 0, alpha: 0.5))
         ctx.restoreGState()
