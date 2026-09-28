@@ -12,5 +12,6 @@ enum DurakTests {
         t.section("Durak")
         t.check("the game introduces itself as durak", DurakGame.info.id == .durak)
         DurakEngineTests.run(t)
+        DurakPresentationTests.run(t)
     }
 }
