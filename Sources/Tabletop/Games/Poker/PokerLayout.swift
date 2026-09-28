@@ -219,9 +219,15 @@ struct PokerLayout {
         // The bet just inside the betting line, clear of the cards. (Bets and
         // turned-up hands are never on the table together: the bets are
         // gathered before anything is shown.)
-        let chipR = betChip / 2
-        let betDistance = max(near + 2 * extent(opponentScale) + 10 + chipR, lineInset - avatarInset + chipR + 4)
+        // A bet's chips stand in a row (up to four stacks) with the amount
+        // under them: wide across, shallow up and down.
+        let chipReach = abs(n.dx) * betChip * 1.75 + abs(n.dy) * betChip * 0.7
+        let betDistance = max(near + 2 * extent(opponentScale) + 8 + chipReach,
+                              lineInset - avatarInset + betChip * 0.5 + 4)
         let bet = avatar.offset(n, by: betDistance)
+        // At the ends of the oval the plate hangs beside the cards rather
+        // than behind them.
+        let atEnd = abs(n.dx) > 0.9
 
         // The button beside the cards, on the side towards the bottom of the
         // table (along the top, to the left).
@@ -229,6 +235,8 @@ struct PokerLayout {
         if tangent.dy < -0.01 || (abs(tangent.dy) <= 0.01 && tangent.dx > 0) {
             tangent = CGVector(dx: -tangent.dx, dy: -tangent.dy)
         }
+        // At the ends, below the cards is the plate: the button goes above.
+        if atEnd { tangent = CGVector(dx: -tangent.dx, dy: -tangent.dy) }
         // Clear of the cards at their largest, turned up at the showdown.
         let dealerOffset = abs(tangent.dx) * cardSize.width * revealedScale * 1.02
             + abs(tangent.dy) * cardSize.height * revealedScale * 0.62 + betChip * 0.5
@@ -239,7 +247,11 @@ struct PokerLayout {
         // table.
         let caption: CGPoint
         let captionAnchor: TableBadge.Anchor
-        if avatar.x <= g.center.x + 1 {
+        if atEnd {
+            // Beside the plate is where the cards are; under it is clear.
+            caption = CGPoint(x: avatar.x, y: frame.maxY)
+            captionAnchor = .below
+        } else if avatar.x <= g.center.x + 1 {
             caption = CGPoint(x: frame.maxX, y: frame.maxY - 29)
             captionAnchor = .trailing
         } else {
@@ -249,9 +261,14 @@ struct PokerLayout {
         // The hand's name at the showdown, on the far side of the cards from
         // the seat.
         let revealedHalfHeight = cardSize.height * revealedScale * 0.56
+        let revealedHalfWidth = cardSize.width * revealedScale * 0.86
         let handName: CGPoint
         let handNameAnchor: TableBadge.Anchor
-        if n.dy < -0.3 {
+        if atEnd {
+            // Towards the middle, where the bets were.
+            handName = CGPoint(x: revealedHole.x + n.dx * (revealedHalfWidth + 2), y: revealedHole.y)
+            handNameAnchor = n.dx > 0 ? .trailing : .leading
+        } else if n.dy < -0.3 {
             handName = CGPoint(x: revealedHole.x, y: revealedHole.y - revealedHalfHeight)
             handNameAnchor = .above
         } else {

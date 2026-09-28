@@ -66,6 +66,10 @@ final class PokerFlowRecorder: PokerFlowDelegate {
 enum PokerFlowTests {
 
     static func run(_ t: TestReporter) {
+        if let hands = TabletopEnvironment.value(of: "--poker-live").flatMap(Int.init) {
+            live(t, hands: hands)
+            return
+        }
         let savedOverride = TabletopEnvironment.animationsOverride
         TabletopEnvironment.animationsOverride = false
         defer { TabletopEnvironment.animationsOverride = savedOverride }
@@ -79,6 +83,51 @@ enum PokerFlowTests {
         pausing(t)
         backgroundWorker(t)
         controller(t)
+    }
+
+    // MARK: Live
+
+    /// `--selftest poker --poker-live`: a few hands in real time, animated,
+    /// in a window that is never shown — the paths the quick tests skip
+    /// (cards in flight, chips in the air, deals that wait their turn). Too
+    /// slow for every run.
+    static func live(_ t: TestReporter, hands: Int) {
+        t.section("Poker — live, animated, in real time")
+        let saved = TabletopEnvironment.animationsOverride
+        TabletopEnvironment.animationsOverride = true
+        defer { TabletopEnvironment.animationsOverride = saved }
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        let view = PokerTableView()
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        let table = PokerTable(config: PokerTableConfig(mode: .cash, opponents: 3, speed: .fast), seed: 2_024)
+        let flow = PokerFlow(table: table, scheduler: view.scheduler, decider: PokerWorkerDecider())
+        let recorder = PokerFlowRecorder()
+        flow.delegate = recorder
+        flow.view = view
+        flow.autopilot = true
+        flow.speed = .fast
+        flow.handLimit = hands
+        var settled = true
+        recorder.onHand = { flow in
+            if view.scene != PokerScene(table: flow.table) { settled = false }
+        }
+        let started = Date()
+        flow.start(table, dealNow: true)
+        let deadline = Date().addingTimeInterval(Double(hands) * 25)
+        while !(flow.stage == .betweenHands && flow.handsDealt == hands) && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        // Let the last flights land.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        t.check("\(hands) hands play out in real time (\(recorder.hands))", recorder.hands == hands)
+        t.check("…each ends on exactly the engine's picture", settled && view.scene == PokerScene(table: flow.table))
+        let cards = view.scene.board.count + view.scene.seats.reduce(0) { $0 + $1.cards.count }
+        t.check("…with one card on the table for every card in play", view.spriteIDs.count == cards)
+        t.info(String(format: "%.1f s", Date().timeIntervalSince(started)))
+        flow.cancelPending()
+        window.contentView = nil
     }
 
     // MARK: Geometry

@@ -9,8 +9,9 @@
 //  `PokerTableView+Play.swift`, which changes the scene a step at a time and
 //  calls the `transition` below with a duration.
 //
-//  Sprite ids: the board is 40…44, and seat s holds 10 + 2s and 11 + 2s. A card keeps its id from the deal to the muck, so the view
-//  can tell a card that moved from one that is new.
+//  Sprite ids: the board is 40…44, and seat s holds 10 + 2s and 11 + 2s. A
+//  card keeps its id from the deal to the muck, so the view can tell a card
+//  that moved from one that is new.
 //
 
 import AppKit
@@ -34,8 +35,13 @@ final class PokerTableView: CardTableView {
     /// so the hand's own words (the result, the hand names) stand down
     /// rather than show through the glass.
     var isQuiet = false {
-        didSet { if isQuiet != oldValue { relayoutTable() } }
+        didSet {
+            guard isQuiet != oldValue else { return }
+            relayoutTable()
+            setScrim(isQuiet)
+        }
     }
+    private var scrim: NSView?
 
     private var seats: [SeatView] = []
     private var betStacks: [ChipStackLayer] = []
@@ -446,6 +452,28 @@ final class PokerTableView: CardTableView {
 
     // MARK: Chrome
 
+    /// The table dimmed under something said over all of it, the way the
+    /// New Game card dims it — and, in a screenshot's drawn glass, so the
+    /// board does not show through the words.
+    private func setScrim(_ on: Bool) {
+        if on {
+            let view = scrim ?? PokerScrimView(frame: bounds)
+            view.frame = bounds
+            view.autoresizingMask = [.width, .height]
+            addSubview(view)        // on top now; the banner comes after it
+            scrim = view
+            if Motion.isEnabled && window != nil {
+                view.alphaValue = 0
+                Motion.animate(duration: Motion.standard) { view.animator().alphaValue = 1 }
+            } else {
+                view.alphaValue = 1
+            }
+        } else if let view = scrim {
+            scrim = nil
+            view.removeFromSuperview()
+        }
+    }
+
     private func positionChrome(_ layout: PokerLayout) {
         for (i, seat) in seats.enumerated() {
             guard let spot = layout.spots[safe: i] else { continue }
@@ -498,4 +526,18 @@ final class PokerTableView: CardTableView {
         }
         return String(format: NSLocalizedString("%@: face-down card", comment: "accessibility: a player's hidden card"), name)
     }
+}
+
+/// The dimming under a table-wide message. Takes the clicks meant for the
+/// table under it.
+final class PokerScrimView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = Palette.scrim.cgColor
+    }
+    required init?(coder: NSCoder) { fatalError("built in code") }
+    override var isFlipped: Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
 }

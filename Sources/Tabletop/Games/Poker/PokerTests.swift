@@ -17,6 +17,10 @@ enum PokerTests {
             t.check("the cover is drawn to \(path)", PokerArtwork.writeSheet(to: path))
             return
         }
+        if TabletopEnvironment.value(of: "--poker-live") != nil {
+            PokerFlowTests.run(t)
+            return
+        }
         PokerEngineTests.run(t)
         PokerWorkerTests.run(t)
         PokerFlowTests.run(t)

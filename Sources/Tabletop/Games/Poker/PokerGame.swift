@@ -267,6 +267,7 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
 
     private func showTournamentResult(place: Int) {
         Banner.dismissAll(in: tableView)
+        tableView.clearCards(animated: true)
         tableView.isQuiet = true
         let table = flow.table
         let title = place == 1
@@ -305,7 +306,7 @@ final class PokerGame: NSViewController, TabletopGame, NSMenuItemValidation, Pok
                                     text: String(format: NSLocalizedString("Blinds %1$@/%2$@", comment: "poker status pill, e.g. Blinds 10/20"),
                                                  Chips.format(blinds.smallBlind), Chips.format(blinds.bigBlind)),
                                     symbolName: "circle.grid.2x1"))
-        if table.config.mode == .tournament, table.handNumber > 0 {
+        if table.config.mode == .tournament, table.handNumber > 0, flow.stage != .finished {
             if let left = table.handsUntilNextLevel {
                 if left == 0 {
                     items.append(StatusPillItem(id: "level",

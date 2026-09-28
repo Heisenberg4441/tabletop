@@ -11,7 +11,8 @@ import Foundation
 
 extension PokerGame {
 
-    static let extraScenarios = ["thinking", "runout", "tournament-end", "new-game"]
+    static let extraScenarios = ["thinking", "runout", "tournament-end", "new-game",
+                                 "three-handed", "four-handed", "five-handed"]
 
     /// The table for a scenario, the engine's five included.
     static func scenarioTable(_ name: String) -> PokerTable? {
@@ -20,6 +21,9 @@ extension PokerGame {
         case "runout": return runoutTable()
         case "tournament-end": return tournamentEndTable()
         case "new-game": return PokerTable(config: PokerTableConfig(mode: .tournament, opponents: 5), seed: 1)
+        case "three-handed": return handed(3)
+        case "four-handed": return handed(4)
+        case "five-handed": return handed(5)
         default: return PokerScenarios.table(name)
         }
     }
@@ -34,6 +38,20 @@ extension PokerGame {
             let found = PokerScenarios.play(&table, until: { t in
                 guard t.street == .flop, t.phase == .betting, let seat = t.toAct, seat != 0 else { return false }
                 return t.players[0].hasActed && t.players[0].canAct && t.players.filter(\.isInHand).count >= 3
+            })
+            if found { return table }
+        }
+        return nil
+    }
+
+    /// `players` at the table, the flop out, the player to act with chips
+    /// in front of somebody — to see the seats balanced at every count.
+    private static func handed(_ players: Int) -> PokerTable? {
+        for seed in UInt64(10_000 + players * 100)..<UInt64(10_200 + players * 100) {
+            var table = PokerTable(config: PokerTableConfig(mode: .tournament, opponents: players - 1), seed: seed)
+            table.startHand()
+            let found = PokerScenarios.play(&table, until: { t in
+                t.street == .flop && t.isHumanToAct && t.players.filter(\.isInHand).count >= players - 1
             })
             if found { return table }
         }

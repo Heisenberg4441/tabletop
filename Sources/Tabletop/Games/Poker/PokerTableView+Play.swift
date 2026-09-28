@@ -366,6 +366,29 @@ extension PokerTableView {
         transition(to: s, duration: duration, delays: delays)
     }
 
+    /// The game is over: the dealer takes the cards in, and the chips stay
+    /// where they ended. The champion keeps the winner's ring.
+    func clearCards(animated: Bool) {
+        step(animated && Motion.isEnabled ? Motion.cardMove * 1.2 : 0) { s in
+            for i in s.seats.indices {
+                s.seats[i].cards = []
+                s.seats[i].bet = 0
+                s.seats[i].caption = nil
+                s.seats[i].handName = nil
+                s.seats[i].revealed = false
+            }
+            s.board = []
+            s.pots = []
+            s.highlight = []
+            s.dimsOthers = false
+            s.result = nil
+            s.humanHand = nil
+            s.toAct = nil
+            s.thinking = nil
+            s.button = nil
+        }
+    }
+
     /// Marks whose turn it is and who is thinking, straight away.
     func setTurn(toAct: Int?, thinking: Int?) {
         guard scene.toAct != toAct || scene.thinking != thinking else { return }
