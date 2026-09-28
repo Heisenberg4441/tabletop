@@ -278,28 +278,34 @@ extension PoolGame {
         TopBarStatus.set(pills, for: .pool)
 
         let top = viewMode == .top
-        var actions = [
-            ChromeAction(id: "view", title: top ? NSLocalizedString("Aim View", comment: "pool button")
-                            : NSLocalizedString("Top View", comment: "pool button"),
-                         symbolName: top ? "scope" : "rectangle", keyEquivalent: "t") { [weak self] in
-                self?.toggleTopView(nil)
-            },
-            ChromeAction(id: "spin", title: NSLocalizedString("Reset Spin", comment: "pool button"),
-                         symbolName: "arrow.counterclockwise",
-                         isEnabled: isPlayersTurn && (tipSide != 0 || tipVertical != 0)) { [weak self] in
-                self?.resetSpin(nil)
-            },
-        ]
-        if match.isPractice {
-            actions.append(ChromeAction(id: "rerack", title: NSLocalizedString("Re-rack", comment: "pool button"),
-                                        symbolName: "triangle", isEnabled: phase != .rolling && phase != .striking) { [weak self] in
-                self?.rematch(nil)
-            })
-        }
+        var actions: [ChromeAction]
         if over {
-            actions.append(ChromeAction(id: "rematch", title: NSLocalizedString("Rematch", comment: "pool button"),
-                                        style: .primary) { [weak self] in self?.rematch(nil) })
+            // The game is decided: the only choices left are what to play next.
+            actions = [
+                ChromeAction(id: "new", title: NSLocalizedString("New Game…", comment: "pool button"),
+                             symbolName: "plus") { [weak self] in self?.presentOptions() },
+                ChromeAction(id: "rematch", title: NSLocalizedString("Rematch", comment: "pool button"),
+                             style: .primary) { [weak self] in self?.rematch(nil) },
+            ]
         } else {
+            actions = [
+                ChromeAction(id: "view", title: top ? NSLocalizedString("Aim View", comment: "pool button")
+                                : NSLocalizedString("Top View", comment: "pool button"),
+                             symbolName: top ? "scope" : "rectangle", keyEquivalent: "t") { [weak self] in
+                    self?.toggleTopView(nil)
+                },
+                ChromeAction(id: "spin", title: NSLocalizedString("Reset Spin", comment: "pool button"),
+                             symbolName: "arrow.counterclockwise",
+                             isEnabled: isPlayersTurn && (tipSide != 0 || tipVertical != 0)) { [weak self] in
+                    self?.resetSpin(nil)
+                },
+            ]
+            if match.isPractice {
+                actions.append(ChromeAction(id: "rerack", title: NSLocalizedString("Re-rack", comment: "pool button"),
+                                            symbolName: "triangle", isEnabled: phase != .rolling && phase != .striking) { [weak self] in
+                    self?.rematch(nil)
+                })
+            }
             actions.append(ChromeAction(id: "shoot", title: NSLocalizedString("Shoot", comment: "pool button"),
                                         style: .primary, keyEquivalent: "\r",
                                         isEnabled: isPlayersTurn && phase == .aiming) { [weak self] in
