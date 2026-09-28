@@ -117,6 +117,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     /// The player's own armed strength while a break stroke is armed in its
     /// place, to go back to after the break.
     var powerBeforeBreak: Double?
+    /// The player's own spin while the spin control shows the computer's,
+    /// to go back to when the turn does.
+    var playerSpin: (side: Double, vertical: Double)?
     var chargePower = 0.0
     var chargeSource: ChargeSource?
     /// The aim view's tilt and distance, which the player adjusts.
@@ -149,8 +152,9 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
     /// The last place a dragged cue ball was allowed to be.
     var dragValidSpot: SIMD2<Double>?
     /// Told about every shot as it is taken into the game — the result the
-    /// balls played out and the rules' verdict on it. For the self-tests.
-    var shotObserver: ((PoolShotResult, PoolTurnOutcome) -> Void)?
+    /// balls played out, the rules' verdict on it, and who played it. For
+    /// the self-tests.
+    var shotObserver: ((PoolShotResult, PoolTurnOutcome, Int) -> Void)?
 
     // Views.
     var root: PoolRootView!
@@ -443,6 +447,7 @@ final class PoolGame: NSViewController, TabletopGame, NSMenuItemValidation {
         computerPlate.seat.name = match.opponentName
         tipSide = 0
         tipVertical = 0
+        playerSpin = nil
         spinControl.set(side: 0, vertical: 0)
         table.apply(table: match.table)
         aim = defaultAim()

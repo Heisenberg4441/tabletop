@@ -66,6 +66,13 @@ final class PoolBallNode {
         contact.opacity = 1
     }
 
+    /// Raises a placed ball `height` metres off the cloth — carried in a
+    /// hand — its contact shade fading as it goes up.
+    func lift(_ height: Double) {
+        node.simdPosition.y = Float(radius + max(0, height))
+        contact.opacity = CGFloat(1 - PoolTextures.smoothstep(0, 0.03, height))
+    }
+
     /// A ball on its way down a pocket: first carried over the lip towards
     /// the middle of the hole, then dropping out of sight.
     func drop(from position: SIMD2<Double>, orientation: simd_quatd, into pocket: PoolPocket, progress p: Double) {

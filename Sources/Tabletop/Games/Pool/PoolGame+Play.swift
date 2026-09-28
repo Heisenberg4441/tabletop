@@ -40,6 +40,7 @@ extension PoolGame {
 
     func beginTurn(announce: Bool) {
         drag = .none
+        armPowerForTurn()
         if match.isOver {
             phase = .over
             cueVisible = false
@@ -60,7 +61,12 @@ extension PoolGame {
         phase = .aiming
         cueVisible = true
         cuePull = 0
-        armPowerForTurn()
+        if let spin = playerSpin {
+            playerSpin = nil
+            tipSide = spin.side
+            tipVertical = spin.vertical
+            spinControl.set(side: spin.side, vertical: spin.vertical)
+        }
         if announce {
             let text: String
             if match.rules.isBreakShot {
@@ -122,6 +128,7 @@ extension PoolGame {
     /// The computer's turn as it looks while it thinks, without asking it
     /// anything — for a screenshot.
     func showThinking() {
+        armPowerForTurn()
         phase = .thinking
         cueVisible = false
         guides(hidden: true)
@@ -147,6 +154,7 @@ extension PoolGame {
             guard gen == generation else { return }
             cueVisible = true
             cuePull = 0.05
+            if playerSpin == nil { playerSpin = (tipSide, tipVertical) }
             tipSide = shot.tipSide
             tipVertical = shot.tipVertical
             spinControl.set(side: shot.tipSide, vertical: shot.tipVertical)
@@ -188,11 +196,15 @@ extension PoolGame {
         }
 
         if let spot = computerPlacement(decision) {
-            // Carry the cue ball to where the computer wants it, and set it
-            // down exactly there: the stroke was chosen for that spot.
+            // Carry the cue ball to where the computer wants it — lifted
+            // over whatever lies between, as a hand would — and set it down
+            // exactly there: the stroke was chosen for that spot.
             let from = match.table.cueBall?.position ?? geometry.headSpot
+            let height = min(0.08, 0.02 + simd_distance(from, spot) * 0.05)
             addTween(PoolTween(duration: 0.7, update: { [weak self] t in
-                self?.moveCueBall(to: from + (spot - from) * t)
+                guard let self else { return }
+                self.moveCueBall(to: from + (spot - from) * t)
+                self.table.balls[0]?.lift(height * sin(.pi * t))
             }, completion: { [weak self] in
                 self?.moveCueBall(to: spot)
                 lineUp()
@@ -216,10 +228,10 @@ extension PoolGame {
     }
 
     /// A break wants a full stroke — the meter's usual middle is barely a
-    /// quarter of a break's pace — so one is armed for it, and the player's
-    /// own strength comes back for the shot after.
+    /// quarter of a break's pace — so one is armed for the player's break,
+    /// and their own strength comes back as soon as the break is over.
     func armPowerForTurn() {
-        if match.rules.isBreakShot {
+        if match.rules.isBreakShot && !match.shooterIsComputer && !match.isOver {
             if powerBeforeBreak == nil { powerBeforeBreak = armedPower }
             armedPower = Self.breakPower
         } else if let before = powerBeforeBreak {
@@ -456,7 +468,7 @@ extension PoolGame {
         self.playback = nil
         let summary = match.apply(playback.outcome, result: playback.result)
         table.apply(table: match.table)
-        shotObserver?(playback.result, playback.outcome)
+        shotObserver?(playback.result, playback.outcome, summary.shooter)
         if let run = summary.finishedRun, run > statistics.bestRun {
             statistics.bestRun = run
             statistics.save()

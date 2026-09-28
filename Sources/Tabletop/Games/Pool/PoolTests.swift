@@ -6,8 +6,9 @@
 //  the presentation's: that the table drawn is the table the engine plays
 //  on, that the textures read the right way round, that the camera settles,
 //  that a game saves and comes back, and that the controller plays whole
-//  games against itself, stops everything that ticks when it leaves the
-//  screen, and photographs itself.
+//  games against itself — every shot shown exactly as the rules scored it —
+//  plays the computer's turn in real time only while it is in front, stops
+//  everything that ticks when it leaves the screen, and photographs itself.
 //
 
 import AppKit
@@ -303,7 +304,31 @@ enum PoolTests {
         t.check("the game in progress is saved as pool-game.json",
                 PoolGame.savedGameName == "pool-game.json" && saved?.table.balls.count == game.match.table.balls.count)
 
+        // The computer's turn shows its own spin on the control, and hands
+        // the player's back with the turn — whenever the turn comes back
+        // (from a few positions, as the computer sometimes runs out).
+        var handedBack = 0, spinRestored = true
+        var easy = PoolOptions()
+        easy.difficulty = .easy
+        for k in 0..<4 where handedBack == 0 {
+            game.startNewGame(easy, breaker: PoolSeat.you)
+            game.setSpin(side: 0.3, vertical: -0.2)
+            game.match.seed = UInt64(31 + k)
+            game.match.table = PoolScenarios.midGame()
+            game.match.rules.isBreakShot = false
+            game.match.rules.ballInHand = nil
+            game.match.rules.groups = [.solids, .stripes]
+            game.match.rules.shooter = PoolSeat.computer
+            game.table.apply(table: game.match.table)
+            game.beginTurn(announce: false)
+            guard !game.match.isOver else { continue }
+            handedBack += 1
+            if !(game.isPlayersTurn && game.tipSide == 0.3 && game.tipVertical == -0.2) { spinRestored = false }
+        }
+        t.check("after the computer's turn the player's own spin is back", handedBack > 0 && spinRestored)
+
         energy(t)
+        computerInRealTime(t)
         snapshot(t)
     }
 
@@ -354,7 +379,18 @@ enum PoolTests {
         var problems: [String] = []
         var wins = [0, 0]
         var trueToPlayback = true, rightPockets = true, legalPlacements = true
-        game.shotObserver = { result, _ in
+        // How each level played: shots, shots that potted a ball of its own
+        // (or kept the turn), and fouls.
+        var levelShots: [PoolDifficulty: (shots: Int, pots: Int, fouls: Int)] = [:]
+        var levels = [PoolDifficulty.medium, .medium]
+        game.shotObserver = { result, outcome, shooter in
+            if !game.match.isPractice, let level = levels[safe: shooter] {
+                var tally = levelShots[level] ?? (0, 0, 0)
+                tally.shots += 1
+                if outcome.foul == nil && (!outcome.credited.isEmpty || outcome.gameOver?.winner == shooter) { tally.pots += 1 }
+                if outcome.foul != nil { tally.fouls += 1 }
+                levelShots[level] = tally
+            }
             guard let trajectory = result.trajectory else { trueToPlayback = false; return }
             // What was shown is what was scored: the playback's last moment
             // is the final table, ball for ball, and every ball it showed
@@ -363,7 +399,10 @@ enum PoolTests {
             for ball in result.final.balls {
                 guard let pose = end[ball.number] else { trueToPlayback = false; continue }
                 if pose.pocket != ball.pocket { trueToPlayback = false }
-                if ball.pocket == nil && simd_distance(pose.position, ball.position) > 1e-9 { trueToPlayback = false }
+                if ball.pocket == nil && (simd_distance(pose.position, ball.position) > 1e-9
+                                          || simd_distance(pose.orientation.vector, ball.orientation.vector) > 1e-9) {
+                    trueToPlayback = false
+                }
             }
             for (ball, pocket) in result.pocketed {
                 guard let track = trajectory.tracks.first(where: { $0.number == ball }) else { rightPockets = false; continue }
@@ -377,6 +416,7 @@ enum PoolTests {
             var options = PoolOptions()
             options.mode = plan.mode
             options.difficulty = plan.computer
+            levels = [plan.you, plan.computer]
             game.startNewGame(options, breaker: plan.breaker)
             let numbers = Set(game.match.table.balls.map(\.number))
             var turns = 0
@@ -423,6 +463,18 @@ enum PoolTests {
                 PoolStatistics.load().played.values.reduce(0, +) == playedBefore + wins[0] + wins[1] && wins[0] + wins[1] == contested)
         t.info(String(format: "%d games (player's seat %d, computer's %d), %d shots, through the controller: %.1f s",
                       plans.count, wins[0], wins[1], shots, Date().timeIntervalSince(started)))
+        var rates: [PoolDifficulty: (pots: Double, fouls: Double)] = [:]
+        for level in PoolDifficulty.allCases {
+            guard let tally = levelShots[level], tally.shots > 0 else { continue }
+            rates[level] = (Double(tally.pots) / Double(tally.shots), Double(tally.fouls) / Double(tally.shots))
+            t.info(String(format: "%@: %d shots, %.0f%% potted, %.0f%% fouls", PoolEngineText.difficulty(level), tally.shots,
+                          100 * Double(tally.pots) / Double(tally.shots), 100 * Double(tally.fouls) / Double(tally.shots)))
+        }
+        if let easy = rates[.easy], let medium = rates[.medium], let hard = rates[.hard] {
+            t.check("each level pots more and fouls less than the one below it, and Hard seldom fouls",
+                    easy.pots < medium.pots && medium.pots < hard.pots && hard.fouls <= medium.fouls
+                        && medium.fouls <= easy.fouls && hard.fouls < 0.1)
+        }
     }
 
     /// What is wrong with the game at rest between turns, if anything.
@@ -497,11 +549,11 @@ enum PoolTests {
         game.gameWillResignActive()
         t.check("and stops the moment the game leaves", !game.clock.isRunning && !game.clock.isAllowed
                     && game.scheduler.isSuspended)
-        // Drive the frames by hand: the stroke lands, the balls roll, the
-        // shot finishes.
+        // Drive the frames by hand — each the longest step the clock ever
+        // takes: the stroke lands, the balls roll, the shot finishes.
         var frames = 0
-        while (game.phase == .striking || game.phase == .rolling) && frames < 4000 {
-            _ = game.frame(1.0 / 60)
+        while (game.phase == .striking || game.phase == .rolling) && frames < 2000 {
+            _ = game.frame(1.0 / 20)
             frames += 1
             if game.phase == .striking, game.pendingResult == nil, game.playback == nil, game.tweens.isEmpty { break }
         }
@@ -510,6 +562,73 @@ enum PoolTests {
         game.gameDidBecomeActive()
         game.gameWillResignActive()
         t.check("balanced start and stop leave nothing running", !game.clock.isRunning)
+    }
+
+    /// The computer's turn as it really runs: deciding on a background
+    /// queue, waiting while the game is away, then carrying the cue ball
+    /// over with ball in hand, lining up, striking and playing out frame by
+    /// frame — the very stroke it decided, from the very spot it chose.
+    private static func computerInRealTime(_ t: TestReporter) {
+        let (game, window) = makeGame()
+        _ = window
+        game.runsSynchronously = false
+        let before = TabletopEnvironment.animationsOverride
+        TabletopEnvironment.animationsOverride = true
+        defer { TabletopEnvironment.animationsOverride = before }
+        var options = PoolOptions()
+        options.difficulty = .easy
+        game.startNewGame(options, breaker: PoolSeat.you)
+        // The player has just scratched; the turn begins while the game is
+        // away (as after a launch): the decision may come back, but nothing
+        // is played.
+        game.match.table = PoolScenarios.midGame()
+        game.match.rules.isBreakShot = false
+        game.match.rules.groups = [.solids, .stripes]
+        game.match.rules.shooter = PoolSeat.computer
+        game.match.rules.ballInHand = .anywhere
+        game.match.rules.lastFoul = .scratch
+        game.table.apply(table: game.match.table)
+        let table = game.match.table
+        game.gameDidBecomeActive()
+        game.gameWillResignActive()
+        game.beginTurn(announce: false)
+        let deadline = Date().addingTimeInterval(20)
+        while game.decision == nil && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard let decision = game.decision, decision.placement != nil else {
+            t.check("the computer decides off the main thread, with ball in hand", false)
+            return
+        }
+        t.check("the computer decides off the main thread, and while the game is away it waits",
+                game.phase == .thinking && !game.clock.isRunning && game.scheduler.isSuspended)
+        // What it decided, worked out here independently.
+        var start = table
+        if let spot = decision.placement, var cue = start.cueBall {
+            cue.position = spot
+            start.cueBall = cue
+        }
+        let expected = PoolPhysics.simulate(decision.shot, from: start, geometry: game.geometry, record: false)
+        var played: PoolShotResult?
+        game.shotObserver = { result, _, _ in if played == nil { played = result } }
+        defer { game.shotObserver = nil }
+
+        // Back in front. The frames are driven by hand, so the display link
+        // is kept out of it; each is the longest step the clock ever takes.
+        game.gameDidBecomeActive()
+        game.clock.isAllowed = false
+        var frames = 0
+        while !(game.match.isOver || (game.isPlayersTurn && game.phase == .aiming)) && frames < 3000 {
+            game.scheduler.runPendingImmediately()
+            _ = game.frame(1.0 / 20)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.001))
+            frames += 1
+        }
+        t.check("back in front, it lines up, strikes, and the turn comes round (\(frames) frames)",
+                game.match.isOver || (game.isPlayersTurn && game.phase == .aiming))
+        t.check("the stroke played is the one decided, from the spot chosen",
+                played.map { $0.final == expected.final && $0.firstContact == expected.firstContact } ?? false)
+        game.gameWillResignActive()
     }
 
     private static func snapshot(_ t: TestReporter) {
