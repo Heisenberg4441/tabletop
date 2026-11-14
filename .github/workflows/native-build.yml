@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - run: ./build.sh --debug
@@ -55,9 +55,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: swift-actions/setup-swift@v2
+      - uses: compnerd/gha-setup-swift@main
         with:
-          swift-version: '6.0.3'
+          swift-version: swift-6.0-release
+          swift-build: 6.0.3-RELEASE
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
       - name: Test the engine

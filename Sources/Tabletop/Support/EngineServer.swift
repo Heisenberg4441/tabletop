@@ -31,7 +31,7 @@ final class EngineServer {
     }
 
     private func object<T: Encodable>(_ value: T) throws -> Any {
-        try JSONSerialization.jsonObject(with: encoder.encode(value))
+        try JSONSerialization.jsonObject(with: encoder.encode(value), options: .fragmentsAllowed)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ value: Any) throws -> T {
