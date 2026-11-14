@@ -1,3 +1,4 @@
+#if os(macOS)
 //
 //  main.swift
 //  Entry point. A SwiftPM executable has no nib, so the application object,
@@ -168,3 +169,25 @@ func launch() {
 MainActor.assumeIsolated {
     launch()
 }
+#else
+import Foundation
+
+let server = EngineServer()
+while let line = readLine() {
+    let response: [String: Any]
+    do {
+        guard let data = line.data(using: .utf8),
+              let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EngineError.invalidRequest("Expected a JSON object")
+        }
+        response = try server.handle(request)
+    } catch {
+        response = ["ok": false, "error": String(describing: error)]
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: response),
+       let output = String(data: data, encoding: .utf8) {
+        print(output)
+        fflush(stdout)
+    }
+}
+#endif

@@ -16,7 +16,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 // MARK: - Balls
 

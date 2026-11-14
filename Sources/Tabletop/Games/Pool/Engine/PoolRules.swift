@@ -26,7 +26,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 enum PoolBallInHand: String, Codable, Sendable {
     /// Behind the head string (the break, and a scratch on the break).

@@ -1,0 +1,77 @@
+name: Native builds
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabletop-macos
+          path: build/Tabletop.app
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    container: swift:5.9-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GNOME build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends meson ninja-build pkg-config libgtk-4-dev libadwaita-1-dev libjson-glib-dev python3
+      - name: Build the shared Swift engine
+        run: swift build -c release --build-path .build-linux
+      - name: Test the engine
+        run: python3 Tools/engine-smoke.py .build-linux/release/Tabletop
+      - name: Build the GNOME shell
+        run: |
+          meson setup platforms/linux/build platforms/linux
+          ninja -C platforms/linux/build
+      - name: Package Linux
+        run: |
+          mkdir -p release/engine
+          cp .build-linux/release/Tabletop release/engine/
+          cp platforms/linux/build/tabletop-ui release/
+          tar -C release -czf tabletop-linux-x64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabletop-linux
+          path: release/tabletop-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '5.9.1'
+      - name: Build the shared Swift engine
+        run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
+      - name: Test the engine
+        run: python Tools/engine-smoke.py .build-windows/release/Tabletop.exe
+      - name: Build the WinUI shell
+        run: dotnet publish platforms/windows/Tabletop/Tabletop.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -o release/ui
+      - name: Package Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release/ui/engine
+          Copy-Item .build-windows/release/Tabletop.exe release/ui/engine/
+          Compress-Archive -Path release/ui/* -DestinationPath release/tabletop-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tabletop-windows
+          path: release/tabletop-windows-x64.zip
+          if-no-files-found: error

@@ -12,7 +12,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 struct PoolAimPrediction: Sendable, Equatable {
     /// Where the cue ball's centre is when it first touches something: the

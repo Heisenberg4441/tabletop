@@ -14,7 +14,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 enum PoolRack {
 

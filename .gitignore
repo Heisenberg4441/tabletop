@@ -1,4 +1,11 @@
 .build
+.build-linux
+.build-windows
+release
+.DS_Store
+platforms/linux/build
+platforms/windows/**/bin
+platforms/windows/**/obj
 # Produced by build.sh on every run; the icon PNG stays tracked.
 build/*.app
 build/*.iconset

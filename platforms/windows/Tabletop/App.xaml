@@ -1,0 +1,14 @@
+<Application xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Tabletop.App">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+      </ResourceDictionary.MergedDictionaries>
+      <SolidColorBrush x:Key="TabletopRoom" Color="#111714" />
+      <SolidColorBrush x:Key="TabletopFelt" Color="#175640" />
+      <SolidColorBrush x:Key="TabletopGold" Color="#D4B46A" />
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

@@ -31,7 +31,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 /// One straight piece of cushion rubber, seen from above: the nose of a
 /// rail, or one facing of a pocket jaw.

@@ -10,7 +10,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 /// How long the aiming guides reach.
 enum PoolGuideLength: String, Codable, CaseIterable, Sendable {
@@ -254,6 +256,7 @@ enum BotRosterFallback {
     static var name: String { NSLocalizedString("Anna", comment: "computer player's name") }
 }
 
+#if os(macOS)
 /// `pool-stats.json`: games and wins against the computer at each
 /// difficulty, and the longest eight-ball run.
 struct PoolStatistics: Codable, Equatable {
@@ -286,3 +289,4 @@ struct PoolStatistics: Codable, Equatable {
 
     func save() { Storage.save(self, to: Self.fileName) }
 }
+#endif

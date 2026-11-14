@@ -43,7 +43,9 @@
 //
 
 import Foundation
+#if canImport(simd)
 import simd
+#endif
 
 enum PoolAIIntent: Sendable, Equatable {
     case breakShot

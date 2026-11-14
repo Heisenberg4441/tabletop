@@ -1,26 +1,38 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// Built with SwiftPM only (no Xcode required). Tools-version 5.9 keeps the
-// target in Swift 5 language mode, which is what we want: AppKit is not
-// fully Sendable-audited and strict concurrency would drown the app in
-// false positives for no runtime benefit. Everything UI-facing is @MainActor
-// by construction; the solitaire solver is the only background work and is
-// explicitly isolated.
-//
-// One target, laid out by folder rather than by module:
-//
-//   App/            the shell — window, library, menu bar, the game contract
-//   Kit/            everything more than one game uses — cards, the table
-//                   surfaces, sound, storage, preferences, the test reporter
-//   Games/<Name>/   one folder per game, and nothing outside it knows the
-//                   game's insides beyond its `TabletopGame` conformance
-//   Support/        the command-line harness — self-tests, screenshots, icon
-//
-// Separate SwiftPM modules would enforce those borders, but they would also
-// force `public` onto every declaration the games share and cost a rebuild of
-// the whole graph for a one-line change in the kit. The borders are a
-// convention, written down in App/GameModule.swift.
+// macOS keeps the original AppKit/SceneKit application. Other hosts compile
+// exactly the same rules as a headless engine used by their native shells.
+let portableSources: [String] = [
+    "Kit/Array.swift", "Kit/Card.swift", "Kit/RNG.swift",
+    "App/main.swift", "Support/PortableSimd.swift", "Support/EngineServer.swift",
+    "Games/Solitaire/Engine/Card+Klondike.swift", "Games/Solitaire/Engine/DealGenerator.swift",
+    "Games/Solitaire/Engine/Game.swift", "Games/Solitaire/Engine/GameState.swift",
+    "Games/Solitaire/Engine/Rules.swift", "Games/Solitaire/Engine/Scoring.swift",
+    "Games/Solitaire/Engine/Solver.swift",
+    "Games/Blackjack/Engine/BlackjackAmount.swift", "Games/Blackjack/Engine/BlackjackCards.swift",
+    "Games/Blackjack/Engine/BlackjackEngine.swift", "Games/Blackjack/Engine/BlackjackRound.swift",
+    "Games/Blackjack/Engine/BlackjackRules.swift", "Games/Blackjack/Engine/BlackjackShoe.swift",
+    "Games/Blackjack/Engine/BlackjackStrategy.swift",
+    "Games/Durak/Engine/DurakBot.swift", "Games/Durak/Engine/DurakCards.swift",
+    "Games/Durak/Engine/DurakEndgameSolver.swift", "Games/Durak/Engine/DurakState.swift",
+    "Games/Durak/Engine/DurakTypes.swift",
+    "Games/Poker/Engine/PokerBot.swift", "Games/Poker/Engine/PokerEquity.swift",
+    "Games/Poker/Engine/PokerEvaluator.swift", "Games/Poker/Engine/PokerTable.swift",
+    "Games/Poker/Engine/PokerTypes.swift",
+    "Games/Pool/Engine/PoolAI.swift", "Games/Pool/Engine/PoolAimGuide.swift",
+    "Games/Pool/Engine/PoolGeometry.swift", "Games/Pool/Engine/PoolPhysics.swift",
+    "Games/Pool/Engine/PoolRack.swift", "Games/Pool/Engine/PoolRules.swift",
+    "Games/Pool/Engine/PoolTrajectory.swift", "Games/Pool/Engine/PoolTypes.swift",
+    "Games/Pool/PoolMatch.swift", "Games/Pool/PoolEngineText.swift",
+]
+
+#if os(macOS)
+let targetSources: [String]? = nil
+#else
+let targetSources: [String]? = portableSources
+#endif
+
 let package = Package(
     name: "Tabletop",
     platforms: [.macOS(.v14)],
@@ -28,6 +40,6 @@ let package = Package(
         .executable(name: "Tabletop", targets: ["Tabletop"])
     ],
     targets: [
-        .executableTarget(name: "Tabletop", path: "Sources/Tabletop")
+        .executableTarget(name: "Tabletop", path: "Sources/Tabletop", sources: targetSources)
     ]
 )
