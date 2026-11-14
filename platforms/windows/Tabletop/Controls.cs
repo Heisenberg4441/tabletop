@@ -53,7 +53,10 @@ public static class Controls
             var color = code / 13 is 1 or 2 ? Color.FromArgb(255, 183, 35, 48) : Color.FromArgb(255, 24, 30, 27);
             var top = Text($"{rank}\n{suit}", width * 0.21, FontWeights.SemiBold, color); top.Margin = new Thickness(7, 5, 0, 0); grid.Children.Add(top);
             var centre = Text(suit, width * 0.48, FontWeights.Normal, color); centre.HorizontalAlignment = HorizontalAlignment.Center; centre.VerticalAlignment = VerticalAlignment.Center; Grid.SetRow(centre, 1); grid.Children.Add(centre);
-            var bottom = Text(($"{suit}\n{rank}"), width * 0.21, FontWeights.SemiBold, color) { RenderTransform = new RotateTransform { Angle = 180 }, RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5), HorizontalAlignment = HorizontalAlignment.Right };
+            var bottom = Text($"{suit}\n{rank}", width * 0.21, FontWeights.SemiBold, color);
+            bottom.RenderTransform = new RotateTransform { Angle = 180 };
+            bottom.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+            bottom.HorizontalAlignment = HorizontalAlignment.Right;
             bottom.Margin = new Thickness(0, 0, 7, 5); Grid.SetRow(bottom, 2); grid.Children.Add(bottom);
         }
         border.Child = grid;

@@ -63,7 +63,7 @@ fi
 echo "==> Running self-tests (kit and every game)"
 "$BINARY" --selftest | tail -3
 echo "==> Playing solitaire games through the real board"
-"$BINARY" --playtest 40 | tail -2
+"$BINARY" --playtest 40
 echo "==> Checking every button and menu item is wired to something"
 "$BINARY" --controls | tail -2
 echo "==> Rendering the library and the kit gallery off-screen"
