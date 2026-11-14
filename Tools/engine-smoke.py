@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import concurrent.futures
 import json
 import subprocess
 import sys
@@ -6,10 +7,17 @@ import sys
 process = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
 def call(game, action="state", **parameters):
+    print(f"Engine: {game}/{action}", flush=True)
     request = {"game": game, "action": action, **parameters}
     process.stdin.write(json.dumps(request) + "\n")
     process.stdin.flush()
-    response = json.loads(process.stdout.readline())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            line = executor.submit(process.stdout.readline).result(timeout=120)
+        except concurrent.futures.TimeoutError:
+            process.kill()
+            raise RuntimeError(f"Timed out at {game}/{action}")
+    response = json.loads(line)
     if not response.get("ok"):
         raise RuntimeError(f"{game}/{action}: {response}")
     return response

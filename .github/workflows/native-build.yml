@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     runs-on: macos-26
@@ -38,6 +42,7 @@ jobs:
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-linux
       - name: Test the engine
+        timeout-minutes: 4
         run: python3 Tools/engine-smoke.py .build-linux/release/Tabletop
       - name: Build the GNOME shell
         run: |
