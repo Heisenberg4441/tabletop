@@ -74,7 +74,7 @@ jobs:
           Write-Output "SDKROOT=$env:SDKROOT"
           swiftc -print-target-info
       - name: Build the shared Swift engine
-        run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
+        run: swift build -c release --build-path .build-windows
       - name: Test the engine
         run: python Tools/engine-smoke.py .build-windows/release/Tabletop.exe
       - name: Build the WinUI shell
@@ -84,6 +84,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release/ui/engine
           Copy-Item .build-windows/release/Tabletop.exe release/ui/engine/
+          Copy-Item "$env:LOCALAPPDATA\Programs\Swift\Runtimes\6.0.3\usr\bin\*.dll" release/ui/
           Compress-Archive -Path release/ui/* -DestinationPath release/tabletop-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
