@@ -677,6 +677,7 @@ private struct PokerBotMind {
 /// sees is the UI's, on its `TableScheduler`, which suspends with the game.
 /// So pausing needs nothing here: an answer that arrives while the game is
 /// in the background waits in the scheduler like any other step.
+#if os(macOS)
 @MainActor
 final class PokerBotWorker {
 
@@ -729,3 +730,4 @@ final class PokerBotWorker {
         isThinking = false
     }
 }
+#endif

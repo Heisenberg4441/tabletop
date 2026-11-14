@@ -4,7 +4,7 @@ import PackageDescription
 // macOS keeps the original AppKit/SceneKit application. Other hosts compile
 // exactly the same rules as a headless engine used by their native shells.
 let portableSources: [String] = [
-    "Kit/Array.swift", "Kit/Card.swift", "Kit/RNG.swift",
+    "Kit/Array.swift", "Kit/Card.swift", "Kit/RNG.swift", "Kit/BotRoster.swift", "Kit/Chips/Chips.swift",
     "App/main.swift", "Support/PortableSimd.swift", "Support/EngineServer.swift",
     "Games/Solitaire/Engine/Card+Klondike.swift", "Games/Solitaire/Engine/DealGenerator.swift",
     "Games/Solitaire/Engine/Game.swift", "Games/Solitaire/Engine/GameState.swift",

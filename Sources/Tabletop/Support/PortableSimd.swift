@@ -47,7 +47,7 @@ func simd_distance<V: SIMD>(_ a: V, _ b: V) -> V.Scalar where V.Scalar: Floating
     simd_length(a - b)
 }
 
-func simd_distance_squared<V: SIMD>(_ a: V, _ b: V) -> V.Scalar where V.Scalar: Numeric {
+func simd_distance_squared<V: SIMD>(_ a: V, _ b: V) -> V.Scalar where V.Scalar: FloatingPoint {
     let d = a - b
     return simd_dot(d, d)
 }

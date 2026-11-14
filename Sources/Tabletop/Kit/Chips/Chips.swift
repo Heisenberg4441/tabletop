@@ -14,7 +14,11 @@
 //  self-test checks that against an exhaustive search.
 //
 
+#if os(macOS)
 import AppKit
+#else
+import Foundation
+#endif
 
 enum Chips {
 
@@ -78,6 +82,7 @@ enum Chips {
     }
 }
 
+#if os(macOS)
 /// The colours of one denomination.
 struct ChipStyle {
     /// The clay.
@@ -124,3 +129,4 @@ struct ChipStyle {
         }
     }
 }
+#endif

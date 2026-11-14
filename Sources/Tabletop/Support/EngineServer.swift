@@ -60,7 +60,7 @@ final class EngineServer {
         guard request.keys.contains(key) else { return nil }
         return Card(code: UInt8(clamping: int(request, key)))
     }
-    private func response<T: Encodable>(_ game: String, state: T, saved: T, extra: [String: Any] = [:]) throws -> [String: Any] {
+    private func response<S: Encodable, T: Encodable>(_ game: String, state: S, saved: T, extra: [String: Any] = [:]) throws -> [String: Any] {
         var result: [String: Any] = ["ok": true, "game": game, "state": try object(state), "saved": try object(saved)]
         for (key, value) in extra { result[key] = value }
         return result
@@ -197,7 +197,7 @@ final class EngineServer {
         switch string(request, "kind") {
         case "attack": return card(request).map(DurakAction.attack)
         case "defend":
-            if let card = card(request), let on = card(request, "on") { return .defend(card, on: on) }
+            if let chosen = card(request), let attack = card(request, "on") { return .defend(chosen, on: attack) }
             return nil
         case "transfer": return card(request).map(DurakAction.transfer)
         case "take": return .take
