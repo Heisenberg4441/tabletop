@@ -21,7 +21,7 @@ public sealed partial class MainWindow
         var opponents = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 35, HorizontalAlignment = HorizontalAlignment.Center };
         for (var seat = 1; seat < hands.Count; seat++)
         {
-            var panel = new StackPanel { Spacing = 5 }; panel.Children.Add(Controls.Text($"Player {seat + 1}  ·  {hands[seat]!.AsArray().Count} cards{seat == actor ? "  ·  thinking" : ""}", 12));
+            var panel = new StackPanel { Spacing = 5 }; panel.Children.Add(Controls.Text($"Player {seat + 1}  ·  {hands[seat]!.AsArray().Count} cards{(seat == actor ? "  ·  thinking" : "")}", 12));
             var cards = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, HorizontalAlignment = HorizontalAlignment.Center };
             for (var i = 0; i < Math.Min(6, hands[seat]!.AsArray().Count); i++) cards.Children.Add(Controls.Card(0, true, width: 45));
             panel.Children.Add(cards); opponents.Children.Add(panel);

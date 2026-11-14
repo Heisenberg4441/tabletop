@@ -2,4 +2,5 @@ project('tabletop', 'c', version: '2.0.0', default_options: ['c_std=c17', 'warni
 gtk = dependency('gtk4')
 adwaita = dependency('libadwaita-1')
 json = dependency('json-glib-1.0')
-executable('tabletop-ui', ['src/main.c', 'src/engine.c'], dependencies: [gtk, adwaita, json], install: true)
+math = meson.get_compiler('c').find_library('m')
+executable('tabletop-ui', ['src/main.c', 'src/engine.c'], dependencies: [gtk, adwaita, json, math], install: true)

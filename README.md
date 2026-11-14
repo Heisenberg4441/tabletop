@@ -20,14 +20,14 @@
 
 ### Windows
 
-Требуются Swift 5.9+ и .NET 10 с Windows App SDK:
+Требуются Swift 6.2.3+ и .NET 10 с Windows App SDK:
 
 ```powershell
-swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
+swift build -c release --build-path .build-windows
 dotnet publish platforms/windows/Tabletop/Tabletop.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -o release/ui
 ```
 
-Скопируйте `.build-windows/release/Tabletop.exe` в `release/ui/engine/` и запустите `release/ui/Tabletop.exe`.
+Скопируйте `.build-windows/release/Tabletop.exe` в `release/ui/engine/`, а Swift runtime DLL из установленного toolchain — в `release/ui/`. CI вкладывает их в архив автоматически. Запуск: `release/ui/Tabletop.exe`.
 
 ### Linux
 
