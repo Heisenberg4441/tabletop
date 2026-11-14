@@ -586,7 +586,11 @@ struct PoolSimulator {
             guard b.mode != .stationary && b.mode != .pocketed else { continue }
             recorder?.owe(i)
             let turn = simd_length(state(of: b, after: min(dt, b.transition) * 0.5).w) * dt
+            #if os(macOS)
             let pieces = Int((turn / PoolTrajectoryRecorder.maximumTurn).rounded(.up))
+            #else
+            let pieces = min(4, Int((turn / PoolTrajectoryRecorder.maximumTurn).rounded(.up)))
+            #endif
             guard pieces > 1 else { continue }
             for k in 1..<pieces {
                 let tau = dt * Double(k) / Double(pieces)

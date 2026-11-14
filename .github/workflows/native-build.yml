@@ -61,12 +61,14 @@ jobs:
           if-no-files-found: error
 
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - uses: step-security/swift-actions-setup-swift@main
+      - uses: compnerd/gha-setup-swift@main
         with:
-          swift-version: '6.2'
+          swift-version: swift-6.0.3-release
+          swift-build: 6.0.3-RELEASE
+          update-sdk-modules: true
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
       - name: Test the engine

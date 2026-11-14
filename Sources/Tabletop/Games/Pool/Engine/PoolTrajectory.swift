@@ -142,6 +142,9 @@ struct PoolTrajectoryRecorder {
 
     /// Pays every keyframe owed for the step that just ended.
     mutating func settle(balls: [PoolSimBall], at time: Double) {
+        #if !os(macOS)
+        if time - end < 1.0 / 60.0 { return }
+        #endif
         for i in balls.indices where owed[i] {
             if balls[i].mode != .pocketed {
                 add(i, time: time, position: balls[i].p, orientation: balls[i].q, pinned: pin[i])
