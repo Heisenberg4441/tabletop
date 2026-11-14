@@ -68,7 +68,11 @@ jobs:
         with:
           swift-version: swift-6.0.3-release
           swift-build: 6.0.3-RELEASE
-          update-sdk-modules: true
+      - name: Inspect the Swift SDK
+        shell: pwsh
+        run: |
+          Write-Output "SDKROOT=$env:SDKROOT"
+          swiftc -print-target-info
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
       - name: Test the engine

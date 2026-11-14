@@ -298,9 +298,14 @@ final class EngineServer {
     }
 
     private func playPoolShot(_ game: inout PoolMatch, _ shot: PoolShot, record: Bool) throws -> [String: Any] {
+        func log(_ message: String) { FileHandle.standardError.write(Data("POOL \(message)\n".utf8)) }
+        let started = Date()
+        log("simulate record=\(record)")
         let result = PoolPhysics.simulate(shot, from: game.table, geometry: geometry, record: record)
+        log("simulated in \(-started.timeIntervalSinceNow)s, keys=\(result.trajectory?.keyframeCount ?? 0)")
         let outcome = PoolRules.evaluate(result, before: game.table, state: game.rules, geometry: geometry)
         let summary = game.apply(outcome, result: result)
+        log("rules applied")
         var tracks: [[String: Any]] = []
         if let trajectory = result.trajectory {
             for track in trajectory.tracks {
@@ -311,6 +316,7 @@ final class EngineServer {
                 tracks.append(["number": track.number, "keys": keys, "pocketTime": track.pocketTime])
             }
         }
+        log("tracks converted")
         return ["duration": result.trajectory?.duration ?? 0, "tracks": tracks,
                 "pocketed": result.pocketed.map(\.ball), "remarks": summary.remarks,
                 "foul": summary.foul.map { String(describing: $0) } ?? NSNull(),
