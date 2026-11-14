@@ -53,7 +53,7 @@ jobs:
           mkdir -p release/engine
           cp .build-linux/release/Tabletop release/engine/
           cp platforms/linux/build/tabletop-ui release/
-          tar -C release -czf tabletop-linux-x64.tar.gz .
+          tar -C release -czf "$PWD/release/tabletop-linux-x64.tar.gz" .
       - uses: actions/upload-artifact@v4
         with:
           name: tabletop-linux
