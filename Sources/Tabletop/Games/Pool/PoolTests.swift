@@ -138,8 +138,8 @@ enum PoolTests {
         // A seven has its bar at the top: more ink in the top half of its
         // coverage than the bottom, if it is the right way up.
         if let seven = PoolTextures.glyphCoverage(7, size: 64) {
-            let top = (0..<32).flatMap { y in (0..<64).map { seven.values[y * 64 + $0] } }.reduce(0, +)
-            let bottom = (32..<64).flatMap { y in (0..<64).map { seven.values[y * 64 + $0] } }.reduce(0, +)
+            let top = seven.values.prefix(32 * 64).reduce(0.0, +)
+            let bottom = seven.values.suffix(32 * 64).reduce(0.0, +)
             t.check("the numbers are printed the right way up", top > bottom * 1.3)
         } else {
             t.check("the numbers are printed the right way up", false)

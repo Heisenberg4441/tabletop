@@ -212,7 +212,9 @@ struct TableGeometry {
     /// down the right — evenly by angle.
     static func seatAngles(count: Int) -> [CGFloat] {
         guard count > 0 else { return [] }
-        return (0..<count).map { .pi / 2 + CGFloat($0) * 2 * .pi / CGFloat(count) }
+        return (0..<count).map { (index: Int) -> CGFloat in
+            .pi / 2 + CGFloat(index) * 2 * .pi / CGFloat(count)
+        }
     }
 }
 

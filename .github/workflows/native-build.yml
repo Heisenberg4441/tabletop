@@ -64,11 +64,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: compnerd/gha-setup-swift@main
+      - uses: step-security/swift-actions-setup-swift@main
         with:
-          swift-version: swift-6.0.3-release
-          swift-build: 6.0.3-RELEASE
-          update-sdk-modules: true
+          swift-version: '6.2'
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
       - name: Test the engine

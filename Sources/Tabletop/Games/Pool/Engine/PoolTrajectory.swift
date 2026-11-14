@@ -171,11 +171,26 @@ struct PoolTrajectoryRecorder {
     func trajectory() -> PoolTrajectory {
         var tracks: [PoolTrajectory.Track] = []
         for i in raw.indices {
-            tracks.append(.init(number: numbers[i], keys: Self.thin(raw[i]), pocket: pockets[i],
-                                pocketTime: pocketTimes[i]))
+            #if os(macOS)
+            let keys = Self.thin(raw[i])
+            #else
+            let keys = Self.portableThin(raw[i])
+            #endif
+            tracks.append(.init(number: numbers[i], keys: keys, pocket: pockets[i], pocketTime: pocketTimes[i]))
         }
         return PoolTrajectory(duration: end, tracks: tracks)
     }
+
+    #if !os(macOS)
+    private static func portableThin(_ keys: [Raw]) -> [PoolTrajectory.Keyframe] {
+        guard keys.count > 512 else { return keys.map(\.key) }
+        var selected: Set<Int> = [0, keys.count - 1]
+        let stride = max(1, keys.count / 512)
+        for i in Swift.stride(from: 0, to: keys.count, by: stride) { selected.insert(i) }
+        for i in keys.indices where keys[i].pinned { selected.insert(i) }
+        return selected.sorted().map { keys[$0].key }
+    }
+    #endif
 
     /// Drops every keyframe the kept ones on either side already predict:
     /// within a fifth of a millimetre and a hundredth of a radian, and never
