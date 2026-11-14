@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using System.Text.Json.Nodes;
 using Windows.UI;
+using Windows.UI.Text;
 
 namespace Tabletop;
 
