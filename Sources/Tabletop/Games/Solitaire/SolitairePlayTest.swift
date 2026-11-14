@@ -358,6 +358,9 @@ extension SolitairePlayTest {
     /// animation that has lost its `m34` still animates, still looks like
     /// something, and is simply the old squeeze wearing a new name.
     static func appleChecks(size: CGSize) -> AppleResults {
+        let previousAnimations = TabletopEnvironment.animationsOverride
+        TabletopEnvironment.animationsOverride = true
+        defer { TabletopEnvironment.animationsOverride = previousAnimations }
         var results = AppleResults()
         var flat = Theme()
         flat.apple = false
