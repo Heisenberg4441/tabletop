@@ -1,4 +1,3 @@
-using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -128,7 +127,7 @@ public sealed partial class MainWindow
         grid.Children.Add(new Ellipse { Width = 28, Height = 28, Fill = new SolidColorBrush(Color.FromArgb(255, 250, 250, 245)) });
         var ball = new Ellipse { Width = 24, Height = 24, Fill = new SolidColorBrush((Color)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Color), colors[number])) };
         grid.Children.Add(ball);
-        if (number > 0) { var text = Controls.Text(number.ToString(), 10, FontWeights.Bold, Colors.Black); text.HorizontalAlignment = HorizontalAlignment.Center; text.VerticalAlignment = VerticalAlignment.Center; grid.Children.Add(text); }
+        if (number > 0) { var text = Controls.Text(number.ToString(), 10, FontWeights.Bold, Microsoft.UI.Colors.Black); text.HorizontalAlignment = HorizontalAlignment.Center; text.VerticalAlignment = VerticalAlignment.Center; grid.Children.Add(text); }
         return grid;
     }
 }
