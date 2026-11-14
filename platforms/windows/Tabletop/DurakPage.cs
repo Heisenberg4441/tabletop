@@ -31,8 +31,8 @@ public sealed partial class MainWindow
         foreach (var pairNode in game["table"]!.AsArray())
         {
             var pair = pairNode!.AsObject(); var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
-            panel.Children.Add(Controls.Card(Controls.CardCode(pair["attack"])));
-            if (pair["defence"] is not null) panel.Children.Add(Controls.Card(Controls.CardCode(pair["defence"])));
+            panel.Children.Add(Controls.Card(Controls.CardCode(pair["attack"]), false));
+            if (pair["defence"] is not null) panel.Children.Add(Controls.Card(Controls.CardCode(pair["defence"]), false));
             table.Children.Add(panel);
         }
         page.Children.Add(table);
