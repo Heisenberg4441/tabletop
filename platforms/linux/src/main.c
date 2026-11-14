@@ -178,6 +178,10 @@ static void draw_poker(cairo_t *cr) {
 }
 
 static void pool_xy(double x, double y, double *px, double *py) { *px = (x + 1.27) / 2.54 * 850 + 75; *py = (y + 0.635) / 1.27 * 420 + 80; }
+static double position_component(JsonNode *position, int component) {
+    if (JSON_NODE_HOLDS_OBJECT(position)) return json_object_get_double_member(json_node_get_object(position), component ? "y" : "x");
+    return json_array_get_double_element(json_node_get_array(position), component);
+}
 static void draw_pool(cairo_t *cr) {
     cairo_set_source_rgb(cr, 0.24, 0.12, 0.06); rounded(cr, 50, 55, 900, 470, 12); cairo_fill(cr);
     cairo_set_source_rgb(cr, 0.08, 0.38, 0.25); cairo_rectangle(cr, 70, 75, 860, 430); cairo_fill(cr);
@@ -187,15 +191,14 @@ static void draw_pool(cairo_t *cr) {
     for (guint i = 0; i < json_array_get_length(balls); i++) {
         JsonObject *ball = member_object(balls, i); if (json_object_has_member(ball, "pocket")) continue;
         int n = number(ball, "number"); JsonNode *position = json_object_get_member(ball, "position");
-        double x, y, bx = 0, by = 0;
-        if (JSON_NODE_HOLDS_OBJECT(position)) { bx = json_object_get_double_member(json_node_get_object(position), "x"); by = json_object_get_double_member(json_node_get_object(position), "y"); }
-        pool_xy(bx, by, &x, &y); cairo_set_source_rgb(cr, colors[n][0], colors[n][1], colors[n][2]); cairo_arc(cr, x, y, 12, 0, 2 * G_PI); cairo_fill(cr);
+        double x, y; pool_xy(position_component(position, 0), position_component(position, 1), &x, &y);
+        cairo_set_source_rgb(cr, colors[n][0], colors[n][1], colors[n][2]); cairo_arc(cr, x, y, 12, 0, 2 * G_PI); cairo_fill(cr);
         if (n) { char label[4]; g_snprintf(label, sizeof label, "%d", n); text(cr, label, x, y - 6, 10, n == 8, n == 8, n == 8, 1); }
     }
     JsonObject *cue = NULL; for (guint i = 0; i < json_array_get_length(balls); i++) if (number(member_object(balls, i), "number") == 0) cue = member_object(balls, i);
     if (cue && !json_object_has_member(cue, "pocket")) {
-        JsonObject *position = json_node_get_object(json_object_get_member(cue, "position")); double x, y;
-        pool_xy(json_object_get_double_member(position, "x"), json_object_get_double_member(position, "y"), &x, &y);
+        JsonNode *position = json_object_get_member(cue, "position"); double x, y;
+        pool_xy(position_component(position, 0), position_component(position, 1), &x, &y);
         cairo_set_source_rgba(cr, 1, 1, 0.85, 0.6); cairo_set_line_width(cr, 1.5); cairo_move_to(cr, x, y); cairo_line_to(cr, x + cos(pool_aim) * 230, y + sin(pool_aim) * 230); cairo_stroke(cr);
     }
 }
@@ -283,7 +286,7 @@ static void canvas_click(GtkGestureClick *gesture, int n_press, double x, double
     double lx = x / gtk_widget_get_width(canvas) * 1000, ly = y / gtk_widget_get_height(canvas) * 600;
     if (!g_strcmp0(current, "solitaire")) {
         JsonObject *p = json_object_new();
-        if (ly < 155 && lx < 110) { json_object_unref(p); call_game("draw", NULL); return; }
+        if (ly < 155 && lx < 110) { json_object_unref(p); call_game(json_array_get_length(array(object(response, "state"), "stock")) ? "draw" : "recycle", NULL); return; }
         json_object_set_string_member(p, "target", ly < 155 && lx < 240 ? "waste" : "tableau");
         if (ly >= 155) { json_object_set_int_member(p, "column", CLAMP((int)(lx - 30) / 110, 0, 6)); json_object_set_int_member(p, "depth", 0); }
         call_game("click", p);
@@ -303,8 +306,8 @@ static void pool_motion(GtkEventControllerMotion *controller, double x, double y
     JsonArray *balls = array(object(object(response, "state"), "table"), "balls");
     for (guint i = 0; i < json_array_get_length(balls); i++) {
         JsonObject *cue = member_object(balls, i); if (number(cue, "number") || json_object_has_member(cue, "pocket")) continue;
-        JsonObject *position = json_node_get_object(json_object_get_member(cue, "position")); double cx, cy;
-        pool_xy(json_object_get_double_member(position, "x"), json_object_get_double_member(position, "y"), &cx, &cy);
+        JsonNode *position = json_object_get_member(cue, "position"); double cx, cy;
+        pool_xy(position_component(position, 0), position_component(position, 1), &cx, &cy);
         pool_aim = atan2(y / gtk_widget_get_height(canvas) * 600 - cy, x / gtk_widget_get_width(canvas) * 1000 - cx); gtk_widget_queue_draw(canvas); return;
     }
 }
