@@ -61,7 +61,7 @@ fi
 # these can touch the player's saved games. Each one exits non-zero on a
 # failure, and `set -e` with pipefail turns that into a failed build.
 echo "==> Running self-tests (kit and every game)"
-"$BINARY" --selftest | tail -3
+"$BINARY" --selftest
 echo "==> Playing solitaire games through the real board"
 "$BINARY" --playtest 40
 echo "==> Checking every button and menu item is wired to something"
