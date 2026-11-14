@@ -273,14 +273,14 @@ final class EngineServer {
                 var shot = PoolShot(aim: double(request, "aim"), power: double(request, "power", 0.6),
                                     tipSide: double(request, "tipSide"), tipVertical: double(request, "tipVertical"))
                 shot.isBreak = game.rules.isBreakShot
-                replay = try playPoolShot(&game, shot)
+                replay = try playPoolShot(&game, shot, record: bool(request, "record", true))
             case "bot":
                 let decision = PoolAI.decide(table: game.table, rules: game.rules, difficulty: game.options.difficulty,
                                              seed: game.decisionSeed, geometry: geometry)
                 if let spot = decision.placement, game.rules.ballInHand != nil {
                     PoolRules.placeCueBall(on: &game.table, preferring: spot, kitchen: game.rules.ballInHand == .kitchen, geometry: geometry)
                 }
-                replay = try playPoolShot(&game, decision.shot)
+                replay = try playPoolShot(&game, decision.shot, record: bool(request, "record", true))
             case "place":
                 let point = SIMD2(double(request, "x"), double(request, "y"))
                 if PoolRules.isValidPlacement(point, game.rules, table: game.table, geometry: geometry) {
@@ -297,8 +297,8 @@ final class EngineServer {
         return try response("pool", state: PoolSavedGame(game, aim: 0), saved: PoolSavedGame(game, aim: 0), extra: extra)
     }
 
-    private func playPoolShot(_ game: inout PoolMatch, _ shot: PoolShot) throws -> [String: Any] {
-        let result = PoolPhysics.simulate(shot, from: game.table, geometry: geometry, record: true)
+    private func playPoolShot(_ game: inout PoolMatch, _ shot: PoolShot, record: Bool) throws -> [String: Any] {
+        let result = PoolPhysics.simulate(shot, from: game.table, geometry: geometry, record: record)
         let outcome = PoolRules.evaluate(result, before: game.table, state: game.rules, geometry: geometry)
         let summary = game.apply(outcome, result: result)
         var tracks: [[String: Any]] = []

@@ -68,6 +68,7 @@ jobs:
         with:
           swift-version: swift-6.0.3-release
           swift-build: 6.0.3-RELEASE
+          update-sdk-modules: true
       - name: Build the shared Swift engine
         run: swift build -c release --build-path .build-windows -Xswiftc -static-stdlib
       - name: Test the engine

@@ -63,6 +63,10 @@ try:
 
     pool = call("pool", "new", mode="eightBall")
     assert len(pool["state"]["table"]["balls"]) == 16
+    call("pool", "shoot", aim=0, power=0.05, record=False)
+    call("pool", "new", mode="eightBall")
+    call("pool", "shoot", aim=0, power=0.7, record=False)
+    call("pool", "new", mode="eightBall")
     shot = call("pool", "shoot", aim=0, power=0.7)
     assert "replay" in shot and shot["replay"]["tracks"]
     print("Engine smoke passed: all five games and pool replay.")
