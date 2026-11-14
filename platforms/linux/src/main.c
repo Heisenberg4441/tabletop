@@ -331,7 +331,7 @@ static void activate(AdwApplication *app, gpointer data) {
     window = ADW_APPLICATION_WINDOW(adw_application_window_new(GTK_APPLICATION(app)));
     gtk_window_set_default_size(GTK_WINDOW(window), 1180, 780); gtk_window_set_title(GTK_WINDOW(window), "Tabletop");
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(css, ".game-tile{padding:0;border-radius:16px;background:#202b27;color:#f2f0e8}.game-symbol{font-size:64px;color:#d4b46a}button{border-radius:8px}canvas{background:#175640}");
+    gtk_css_provider_load_from_data(css, ".game-tile{padding:0;border-radius:16px;background:#202b27;color:#f2f0e8}.game-symbol{font-size:64px;color:#d4b46a}button{border-radius:8px}canvas{background:#175640}", -1);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     if (!engine_start()) { GtkWidget *label = gtk_label_new("Tabletop engine was not found. Set TABLETOP_ENGINE to the Swift executable."); adw_application_window_set_content(window, label); }
     else show_library();
@@ -339,7 +339,7 @@ static void activate(AdwApplication *app, gpointer data) {
 }
 
 int main(int argc, char **argv) {
-    AdwApplication *app = adw_application_new("com.tabletop.games", G_APPLICATION_DEFAULT_FLAGS);
+    AdwApplication *app = adw_application_new("com.tabletop.games", G_APPLICATION_FLAGS_NONE);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
     int status = g_application_run(G_APPLICATION(app), argc, argv);
     engine_stop(); g_object_unref(app); return status;
