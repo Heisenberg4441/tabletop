@@ -313,7 +313,8 @@ final class EngineServer {
                     ["time": key.time, "x": key.position.x, "y": key.position.y, "drop": key.drop,
                      "q": [key.orientation.vector.x, key.orientation.vector.y, key.orientation.vector.z, key.orientation.vector.w]]
                 }
-                tracks.append(["number": track.number, "keys": keys, "pocketTime": track.pocketTime])
+                let pocketTime: Any = track.pocketTime.isFinite ? track.pocketTime : NSNull()
+                tracks.append(["number": track.number, "keys": keys, "pocketTime": pocketTime])
             }
         }
         log("tracks converted")
