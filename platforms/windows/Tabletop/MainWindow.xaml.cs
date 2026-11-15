@@ -9,7 +9,7 @@ using Windows.UI;
 
 namespace Tabletop;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private EngineClient? engine;
     private EngineClient Engine => engine ??= new EngineClient();
