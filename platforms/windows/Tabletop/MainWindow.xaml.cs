@@ -9,10 +9,11 @@ using Windows.UI;
 
 namespace Tabletop;
 
-public sealed partial class MainWindow : Window
+public sealed class MainWindow : Window
 {
     private EngineClient? engine;
     private EngineClient Engine => engine ??= new EngineClient();
+    private Grid RootGrid { get; } = new();
     private readonly Grid content = new();
     private readonly TextBlock status = Controls.Text("", 12);
     private string? current;
@@ -21,7 +22,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent();
+        Content = RootGrid;
         Title = "Tabletop";
         AppWindow.Resize(new SizeInt32(1280, 840));
         timer.Tick += BotTick;
