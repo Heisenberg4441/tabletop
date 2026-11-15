@@ -1,3 +1,4 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using System.Runtime.InteropServices;
 
@@ -11,7 +12,7 @@ internal static class Program
         try
         {
             WinRT.ComWrappersSupport.InitializeComWrappers();
-            Application.Start(_ =>
+            Application.Start(parameters =>
             {
                 var context = new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread());
                 SynchronizationContext.SetSynchronizationContext(context);
