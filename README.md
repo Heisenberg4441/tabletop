@@ -27,7 +27,7 @@ swift build -c release --build-path .build-windows
 dotnet publish platforms/windows/Tabletop/Tabletop.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -o release/ui
 ```
 
-Скопируйте `.build-windows/release/Tabletop.exe` в `release/ui/engine/`, а Swift runtime DLL из установленного toolchain — в `release/ui/`. CI вкладывает их в архив автоматически. Запуск: `release/ui/Tabletop.exe`.
+Скопируйте `.build-windows/release/Tabletop.exe` в `release/ui/engine/`, а Swift runtime DLL из установленного toolchain — в `release/ui/`. CI вкладывает их в архив автоматически. Перед запуском полностью распакуйте ZIP: `Tabletop.exe` нельзя запускать отдельно от остальных файлов. Запуск: `release/ui/Tabletop.exe`.
 
 ### Linux
 

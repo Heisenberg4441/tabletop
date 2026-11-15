@@ -11,7 +11,8 @@ namespace Tabletop;
 
 public sealed partial class MainWindow : Window
 {
-    private readonly EngineClient engine = new();
+    private EngineClient? engine;
+    private EngineClient Engine => engine ??= new EngineClient();
     private readonly Grid content = new();
     private readonly TextBlock status = Controls.Text("", 12);
     private string? current;
@@ -24,7 +25,7 @@ public sealed partial class MainWindow : Window
         Title = "Tabletop";
         AppWindow.Resize(new SizeInt32(1280, 840));
         timer.Tick += BotTick;
-        Closed += (_, _) => { timer.Stop(); engine.Dispose(); };
+        Closed += (_, _) => { timer.Stop(); engine?.Dispose(); };
         ShowLibrary();
     }
 
@@ -81,7 +82,7 @@ public sealed partial class MainWindow : Window
     private async Task ShowGame(string game)
     {
         current = game; PageShell(GameTitle(game), out _);
-        try { state = await engine.RestoreOrState(game); RenderCurrent(); }
+        try { state = await Engine.RestoreOrState(game); RenderCurrent(); }
         catch (Exception error) { await Error(error); }
     }
 
@@ -89,7 +90,7 @@ public sealed partial class MainWindow : Window
     {
         if (current is null) return;
         timer.Stop();
-        try { state = await engine.Send(current, action, configure); RenderCurrent(); }
+        try { state = await Engine.Send(current, action, configure); RenderCurrent(); }
         catch (Exception error) { await Error(error); }
     }
 

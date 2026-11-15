@@ -16,6 +16,8 @@ public sealed class EngineClient : IDisposable
         Directory.CreateDirectory(saves);
         var executable = Environment.GetEnvironmentVariable("TABLETOP_ENGINE")
             ?? Path.Combine(AppContext.BaseDirectory, "engine", "Tabletop.exe");
+        if (!File.Exists(executable))
+            throw new FileNotFoundException($"The Tabletop engine was not found at '{executable}'. Extract the entire Windows archive before launching Tabletop.exe.", executable);
         process = new Process
         {
             StartInfo = new ProcessStartInfo(executable)
@@ -25,12 +27,18 @@ public sealed class EngineClient : IDisposable
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                WorkingDirectory = AppContext.BaseDirectory,
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardInputEncoding = Encoding.UTF8,
             },
             EnableRaisingEvents = true,
         };
-        process.Start();
+        try { process.Start(); }
+        catch (Exception error)
+        {
+            process.Dispose();
+            throw new InvalidOperationException($"Could not start the Tabletop engine at '{executable}'. Extract the entire Windows archive, including the engine folder and DLL files. {error.Message}", error);
+        }
     }
 
     public async Task<JsonObject> Send(string game, string action, Action<JsonObject>? configure = null)
