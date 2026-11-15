@@ -87,6 +87,26 @@ jobs:
           Copy-Item .build-windows/release/Tabletop.exe release/ui/engine/
           Copy-Item "$env:LOCALAPPDATA\Programs\Swift\Runtimes\6.2.3\usr\bin\*.dll" release/ui/
           Compress-Archive -Path release/ui/* -DestinationPath release/tabletop-windows-x64.zip
+      - name: Smoke-test the Windows shell
+        shell: pwsh
+        run: |
+          $started = Get-Date
+          $app = Start-Process "$PWD/release/ui/Tabletop.exe" -WorkingDirectory "$PWD/release/ui" -PassThru
+          Start-Sleep -Seconds 15
+          $app.Refresh()
+          try {
+            if ($app.HasExited) {
+              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started } -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProviderName -in '.NET Runtime', 'Application Error', 'Windows Error Reporting' } |
+                Select-Object -First 10 | Format-List ProviderName, Id, LevelDisplayName, Message
+              throw "Tabletop.exe exited during startup with code $($app.ExitCode)."
+            }
+            if ($app.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Tabletop.exe is running but has no main window.' }
+            Write-Output "Windows shell opened a main window: $($app.MainWindowTitle)"
+          }
+          finally {
+            if (!$app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: tabletop-windows
