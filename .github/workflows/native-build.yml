@@ -94,6 +94,8 @@ jobs:
           $app = Start-Process "$PWD/release/ui/Tabletop.exe" -WorkingDirectory "$PWD/release/ui" -PassThru
           Start-Sleep -Seconds 15
           $app.Refresh()
+          $startupLog = "$env:LOCALAPPDATA/Tabletop/startup-error.log"
+          if (Test-Path $startupLog) { Get-Content $startupLog }
           try {
             if ($app.HasExited) {
               Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started } -ErrorAction SilentlyContinue |
